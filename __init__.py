@@ -318,7 +318,7 @@ class PeaceElitePEAssembler:
 
 
 class PeaceEliteReferenceBatch:
-    """Select matched references and preserve them as ordered IMAGE batch items."""
+    """Select matched references lazily and preserve them as ordered IMAGE batch items."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -327,12 +327,12 @@ class PeaceEliteReferenceBatch:
                 "route_state": ("PEACE_ELITE_ROUTE",),
             },
             "optional": {
-                "pan_image": ("IMAGE",),
-                "screaming_chicken_image": ("IMAGE",),
-                "airdrop_crate_image": ("IMAGE",),
-                "level3_armor_image": ("IMAGE",),
-                "level3_backpack_image": ("IMAGE",),
-                "level3_helmet_image": ("IMAGE",),
+                "pan_image": ("IMAGE", {"lazy": True}),
+                "screaming_chicken_image": ("IMAGE", {"lazy": True}),
+                "airdrop_crate_image": ("IMAGE", {"lazy": True}),
+                "level3_armor_image": ("IMAGE", {"lazy": True}),
+                "level3_backpack_image": ("IMAGE", {"lazy": True}),
+                "level3_helmet_image": ("IMAGE", {"lazy": True}),
             },
         }
 
@@ -340,6 +340,19 @@ class PeaceEliteReferenceBatch:
     RETURN_NAMES = ("reference_images", "reference_manifest", "reference_count")
     FUNCTION = "collect"
     CATEGORY = "ByteArtist/image"
+
+    def check_lazy_status(self, route_state, **images):
+        state = _validate_route_state(route_state)
+        if not state.get("enabled"):
+            return []
+
+        prototype_by_key = {item["key"]: item for item in PROTOTYPES}
+        needed = []
+        for match in state["matched"]:
+            input_name = prototype_by_key[match["key"]]["image_input"]
+            if input_name in images and images[input_name] is None:
+                needed.append(input_name)
+        return needed
 
     def collect(self, route_state, **images):
         return collect_reference_batch(route_state, images)

@@ -74,6 +74,13 @@ or pad inputs individually before this node when necessary. Preserve each
 reference's aspect ratio; do not stretch the source or combine multiple
 references into one canvas.
 
+All six image sockets use ComfyUI lazy evaluation. A disabled route requests
+none of the image inputs and returns a real empty image list; an enabled route
+requests only the matched references. Therefore this node can connect directly
+to the generation node and also owns the generic-path empty-reference result.
+Do not keep a separate screaming-chicken image gate or use any prototype asset
+as an empty-reference placeholder.
+
 The downstream `BALLMImg` node must be verified to interpret an IMAGE batch as
 multiple ordered references in one Seedream request, rather than using only
 the first image or launching one generation per image. The `BALLMImg` source
@@ -89,7 +96,7 @@ category_code + user_input
    |-> user_input_json -> specialized production LLM user input
    `-> route_state
        |-> Peace Elite Prototype PE Assembler -> specialized system prompt
-       `-> Peace Elite Multi-Reference Batch -> BALLMImg.images
+       `-> Peace Elite Multi-Reference Batch -> image generation node
 ```
 
 When no prototype is matched, `prototype_enabled` is `false`, the PE assembler
