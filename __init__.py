@@ -165,7 +165,7 @@ def _is_empty_image(value):
 
 
 def collect_reference_batch(route_state, images):
-    """Collect selected reference tensors as an ordered IMAGE batch, never a pixel collage."""
+    """Collect ordered HWC tensors as one list payload for the downstream image node."""
     state = _validate_route_state(route_state)
     if not state.get("enabled"):
         return [], "", 0
@@ -192,22 +192,20 @@ def collect_reference_batch(route_state, images):
             )
         selected.append(image)
 
-    if len(selected) == 1:
-        batch = selected[0]
-    else:
-        first_shape = tuple(selected[0].shape[1:])
-        for image in selected[1:]:
-            if tuple(image.shape[1:]) != first_shape:
-                raise ValueError(
-                    "多张参考图的高、宽和通道数必须一致；请在本节点前分别调整到相同尺寸。"
-                )
-        try:
-            import torch
-        except ImportError as exc:
-            raise RuntimeError("ComfyUI 环境缺少 torch，无法组成 IMAGE batch。") from exc
-        batch = torch.cat(selected, dim=0)
+    first_shape = tuple(selected[0].shape[1:])
+    for image in selected[1:]:
+        if tuple(image.shape[1:]) != first_shape:
+            raise ValueError(
+                "多张参考图的高、宽和通道数必须一致；请在本节点前分别调整到相同尺寸。"
+            )
 
-    return batch, build_reference_manifest(state), len(selected)
+    # BALLMImg's egress uploader iterates a Python sequence and gives every item
+    # directly to PIL.Image.fromarray. A standard ComfyUI [N,H,W,C] IMAGE batch
+    # is therefore treated as one four-dimensional image and fails in PIL.
+    # Keep this list as one opaque Comfy payload (OUTPUT_IS_LIST=False), while
+    # removing each input's singleton batch dimension so every item is HWC.
+    individual_images = [image[0] for image in selected]
+    return individual_images, build_reference_manifest(state), len(individual_images)
 
 
 class PeaceElitePrototypeRouter:
@@ -318,7 +316,7 @@ class PeaceElitePEAssembler:
 
 
 class PeaceEliteReferenceBatch:
-    """Select matched references lazily and preserve them as ordered IMAGE batch items."""
+    """Select matched references lazily as one ordered list of HWC image tensors."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -338,6 +336,9 @@ class PeaceEliteReferenceBatch:
 
     RETURN_TYPES = ("IMAGE", "STRING", "INT")
     RETURN_NAMES = ("reference_images", "reference_manifest", "reference_count")
+    # False is intentional: Comfy wraps the Python list as one payload, so the
+    # downstream generator executes once and receives every ordered reference.
+    OUTPUT_IS_LIST = (False, False, False)
     FUNCTION = "collect"
     CATEGORY = "ByteArtist/image"
 
@@ -367,5 +368,5 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PeaceElitePrototypeRouter": "和平精英原型路由",
     "PeaceElitePEAssembler": "和平精英原型 PE 组装",
-    "PeaceEliteReferenceBatch": "和平精英多参考图批次",
+    "PeaceEliteReferenceBatch": "和平精英有序多参考图列表",
 }

@@ -64,15 +64,23 @@ shared PE must contain exactly one `<<<ACTIVE_PROTOTYPE_CONTEXT>>>` slot. The
 assembler replaces that slot with the ordered reference manifest and active
 modules, keeping the final output contract at the end of the system prompt.
 
-### Peace Elite Multi-Reference Batch
+### Peace Elite Ordered Reference List
 
 This node receives six independent reference images, selects only the matched
-ones, and combines them into an ordered ComfyUI IMAGE batch. It never creates
-a pixel collage. Every selected input must contain exactly one image, and all
-selected images must have identical height, width, and channel count. Resize
-or pad inputs individually before this node when necessary. Preserve each
-reference's aspect ratio; do not stretch the source or combine multiple
+ones, removes each input's singleton batch dimension, and returns one ordered
+Python list whose items are individual `H x W x C` image tensors. It never
+creates a pixel collage. Every selected input must contain exactly one image,
+and all selected images must have identical height, width, and channel count.
+Resize or pad inputs individually before this node when necessary. Preserve
+each reference's aspect ratio; do not stretch the source or combine multiple
 references into one canvas.
+
+`OUTPUT_IS_LIST` deliberately remains false. ComfyUI therefore wraps the
+Python list as one payload and calls the downstream generation node once. Do
+not change it to an execution list: doing so would make ComfyUI call a normal
+downstream node once per reference. This output is a deliberate adapter for a
+list-aware image-upload input; do not route it through ordinary ComfyUI IMAGE
+processing nodes that expect one standard BHWC tensor.
 
 All six image sockets use ComfyUI lazy evaluation. A disabled route requests
 none of the image inputs and returns a real empty image list; an enabled route
@@ -81,11 +89,12 @@ to the generation node and also owns the generic-path empty-reference result.
 Do not keep a separate screaming-chicken image gate or use any prototype asset
 as an empty-reference placeholder.
 
-The downstream `BALLMImg` node must be verified to interpret an IMAGE batch as
-multiple ordered references in one Seedream request, rather than using only
-the first image or launching one generation per image. The `BALLMImg` source
-is not included in this repository, so test this behavior in the ByteArtist
-environment with at least two visually distinct references before deployment.
+This adapter matches the observed downstream uploader contract: it iterates a
+Python sequence and sends each item directly to `PIL.Image.fromarray`, which
+requires an individual HWC image instead of a four-dimensional ComfyUI IMAGE
+batch. The downstream source is not included in this repository, so still test
+with at least two visually distinct references and confirm one generation task
+receives every reference in manifest order before deployment.
 
 ## Recommended Wiring
 
@@ -96,7 +105,7 @@ category_code + user_input
    |-> user_input_json -> specialized production LLM user input
    `-> route_state
        |-> Peace Elite Prototype PE Assembler -> specialized system prompt
-       `-> Peace Elite Multi-Reference Batch -> image generation node
+       `-> Peace Elite Ordered Reference List -> image generation node
 ```
 
 When no prototype is matched, `prototype_enabled` is `false`, the PE assembler
@@ -115,4 +124,4 @@ Restart ComfyUI and search for these nodes:
 
 - `和平精英原型路由`
 - `和平精英原型 PE 组装`
-- `和平精英多参考图批次`
+- `和平精英有序多参考图列表`
