@@ -1,0 +1,358 @@
+import json
+import re
+
+
+PROTOTYPES = (
+    {
+        "id": 1,
+        "key": "pan",
+        "name": "平底锅",
+        "terms": ("平底锅",),
+        "image_input": "pan_image",
+        "module_input": "pan_module",
+    },
+    {
+        "id": 2,
+        "key": "screaming_chicken",
+        "name": "尖叫鸡",
+        "terms": ("尖叫鸡", "鸡否"),
+        "image_input": "screaming_chicken_image",
+        "module_input": "screaming_chicken_module",
+    },
+    {
+        "id": 3,
+        "key": "airdrop_crate",
+        "name": "空投箱",
+        "terms": ("空投箱", "空投"),
+        "image_input": "airdrop_crate_image",
+        "module_input": "airdrop_crate_module",
+    },
+    {
+        "id": 4,
+        "key": "level3_armor",
+        "name": "三级甲",
+        "terms": ("三级防弹衣", "三级甲"),
+        "image_input": "level3_armor_image",
+        "module_input": "level3_armor_module",
+    },
+    {
+        "id": 5,
+        "key": "level3_backpack",
+        "name": "三级包",
+        "terms": ("三级背包", "三级包"),
+        "image_input": "level3_backpack_image",
+        "module_input": "level3_backpack_module",
+    },
+    {
+        "id": 6,
+        "key": "level3_helmet",
+        "name": "三级头",
+        "terms": ("三级头盔", "三级头"),
+        "image_input": "level3_helmet_image",
+        "module_input": "level3_helmet_module",
+    },
+)
+
+
+PE_VERSION_LINE = re.compile(r"\APE_VERSION: v[0-9]+\.[0-9]+\.[0-9]+\s*(?:\r?\n)+")
+ACTIVE_PROTOTYPE_CONTEXT_SLOT = "<<<ACTIVE_PROTOTYPE_CONTEXT>>>"
+
+
+def _as_text(value):
+    if value is None:
+        return ""
+    return str(value)
+
+
+def _strip_pe_version(value):
+    """Keep source PE files versioned without injecting their metadata into the LLM."""
+    return PE_VERSION_LINE.sub("", _as_text(value), count=1).strip()
+
+
+def build_route_state(category_code, user_input):
+    """Build a deterministic, JSON-serializable routing state."""
+    category_text = _as_text(category_code).strip()
+    original_text = _as_text(user_input)
+    category_enabled = category_text == "3"
+    matched = []
+
+    if category_enabled:
+        for prototype in PROTOTYPES:
+            matched_term = next(
+                (term for term in prototype["terms"] if term in original_text),
+                None,
+            )
+            if matched_term is not None:
+                matched.append(
+                    {
+                        "id": prototype["id"],
+                        "key": prototype["key"],
+                        "name": prototype["name"],
+                        "matched_term": matched_term,
+                        "image_index": len(matched) + 1,
+                    }
+                )
+
+    return {
+        "schema_version": 1,
+        "category_code": category_text,
+        "category_enabled": category_enabled,
+        "enabled": bool(matched),
+        "user_input": original_text,
+        "matched": matched,
+    }
+
+
+def _validate_route_state(route_state):
+    if not isinstance(route_state, dict):
+        raise TypeError("route_state 必须来自 Peace Elite Prototype Router 节点。")
+    if route_state.get("schema_version") != 1:
+        raise ValueError("不支持的和平精英原型路由状态版本。")
+    return route_state
+
+
+def build_reference_manifest(route_state):
+    state = _validate_route_state(route_state)
+    if not state.get("enabled"):
+        return ""
+
+    lines = [
+        "工作流按以下顺序传入彼此独立的参考图；图号与原型绑定关系不可交换："
+    ]
+    for item in state["matched"]:
+        lines.append(
+            f'图{item["image_index"]}是{item["name"]}的唯一视觉真源，只控制{item["name"]}。'
+        )
+    return "\n".join(lines)
+
+
+def assemble_prototype_pe(route_state, common_pe, modules):
+    state = _validate_route_state(route_state)
+    if not state.get("enabled"):
+        return "", ""
+
+    common_text = _strip_pe_version(common_pe)
+    if not common_text:
+        raise ValueError("命中特调路线时，common_pe 不能为空。")
+    if common_text.count(ACTIVE_PROTOTYPE_CONTEXT_SLOT) != 1:
+        raise ValueError(
+            "common_pe 必须且只能包含一个 <<<ACTIVE_PROTOTYPE_CONTEXT>>> 插槽。"
+        )
+
+    manifest = build_reference_manifest(state)
+    active_sections = [manifest]
+
+    prototype_by_key = {item["key"]: item for item in PROTOTYPES}
+    for match in state["matched"]:
+        prototype = prototype_by_key[match["key"]]
+        module_text = _strip_pe_version(modules.get(prototype["module_input"]))
+        if not module_text:
+            raise ValueError(f'{prototype["name"]}已命中，但对应 PE 模块为空。')
+        image_index = match["image_index"]
+        active_sections.append(
+            f'<<<PROTOTYPE_MODULE_BEGIN:{prototype["name"]}:图{image_index}>>>\n'
+            f"{module_text}\n"
+            f'<<<PROTOTYPE_MODULE_END:{prototype["name"]}:图{image_index}>>>'
+        )
+
+    active_context = "\n\n".join(active_sections)
+    assembled = common_text.replace(ACTIVE_PROTOTYPE_CONTEXT_SLOT, active_context)
+    return assembled, manifest
+
+
+def _is_empty_image(value):
+    return value is None or isinstance(value, (list, tuple)) and len(value) == 0
+
+
+def collect_reference_batch(route_state, images):
+    """Collect selected reference tensors as an ordered IMAGE batch, never a pixel collage."""
+    state = _validate_route_state(route_state)
+    if not state.get("enabled"):
+        return [], "", 0
+
+    prototype_by_key = {item["key"]: item for item in PROTOTYPES}
+    selected = []
+    for match in state["matched"]:
+        prototype = prototype_by_key[match["key"]]
+        image = images.get(prototype["image_input"])
+        if _is_empty_image(image):
+            raise ValueError(f'{prototype["name"]}已命中，但对应参考图没有连接。')
+        if isinstance(image, (list, tuple)):
+            if len(image) != 1:
+                raise ValueError(
+                    f'{prototype["name"]}的输入必须是一张参考图，不能预先传入图片列表。'
+                )
+            image = image[0]
+        shape = getattr(image, "shape", None)
+        if shape is None or len(shape) != 4:
+            raise TypeError(f'{prototype["name"]}参考图不是标准 ComfyUI IMAGE 张量。')
+        if int(shape[0]) != 1:
+            raise ValueError(
+                f'{prototype["name"]}参考图必须只含一张图片，当前 batch 数为 {shape[0]}。'
+            )
+        selected.append(image)
+
+    if len(selected) == 1:
+        batch = selected[0]
+    else:
+        first_shape = tuple(selected[0].shape[1:])
+        for image in selected[1:]:
+            if tuple(image.shape[1:]) != first_shape:
+                raise ValueError(
+                    "多张参考图的高、宽和通道数必须一致；请在本节点前分别调整到相同尺寸。"
+                )
+        try:
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("ComfyUI 环境缺少 torch，无法组成 IMAGE batch。") from exc
+        batch = torch.cat(selected, dim=0)
+
+    return batch, build_reference_manifest(state), len(selected)
+
+
+class PeaceElitePrototypeRouter:
+    """Route exact Peace Elite prototype mentions before Ark Search."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "category_code": ("STRING", {"default": "", "forceInput": True}),
+                "user_input": ("STRING", {"default": "", "multiline": True, "forceInput": True}),
+            }
+        }
+
+    RETURN_TYPES = (
+        "PEACE_ELITE_ROUTE",
+        "BOOLEAN",
+        "BOOLEAN",
+        "BOOLEAN",
+        "BOOLEAN",
+        "BOOLEAN",
+        "BOOLEAN",
+        "BOOLEAN",
+        "STRING",
+        "STRING",
+        "STRING",
+    )
+    RETURN_NAMES = (
+        "route_state",
+        "prototype_enabled",
+        "pan",
+        "screaming_chicken",
+        "airdrop_crate",
+        "level3_armor",
+        "level3_backpack",
+        "level3_helmet",
+        "matched_names",
+        "matched_ids_json",
+        "user_input_json",
+    )
+    FUNCTION = "route"
+    CATEGORY = "ByteArtist/logic"
+
+    def route(self, category_code, user_input):
+        state = build_route_state(category_code, user_input)
+        matched_keys = {item["key"] for item in state["matched"]}
+        matched_names = "、".join(item["name"] for item in state["matched"])
+        matched_ids = [item["id"] for item in state["matched"]]
+        user_input_json = json.dumps(
+            {"用户原词": state["user_input"]},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        flags = [prototype["key"] in matched_keys for prototype in PROTOTYPES]
+
+        return (
+            state,
+            state["enabled"],
+            *flags,
+            matched_names,
+            json.dumps(matched_ids, separators=(",", ":")),
+            user_input_json,
+        )
+
+
+class PeaceElitePEAssembler:
+    """Assemble the common PE, ordered reference bindings, and active prototype modules."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "route_state": ("PEACE_ELITE_ROUTE",),
+                "common_pe": ("STRING", {"default": "", "multiline": True, "forceInput": True}),
+            },
+            "optional": {
+                "pan_module": ("STRING", {"default": "", "multiline": True, "forceInput": True}),
+                "screaming_chicken_module": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "airdrop_crate_module": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "level3_armor_module": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "level3_backpack_module": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "level3_helmet_module": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("assembled_pe", "reference_manifest")
+    FUNCTION = "assemble"
+    CATEGORY = "ByteArtist/text"
+
+    def assemble(self, route_state, common_pe, **modules):
+        return assemble_prototype_pe(route_state, common_pe, modules)
+
+
+class PeaceEliteReferenceBatch:
+    """Select matched references and preserve them as ordered IMAGE batch items."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "route_state": ("PEACE_ELITE_ROUTE",),
+            },
+            "optional": {
+                "pan_image": ("IMAGE",),
+                "screaming_chicken_image": ("IMAGE",),
+                "airdrop_crate_image": ("IMAGE",),
+                "level3_armor_image": ("IMAGE",),
+                "level3_backpack_image": ("IMAGE",),
+                "level3_helmet_image": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE", "STRING", "INT")
+    RETURN_NAMES = ("reference_images", "reference_manifest", "reference_count")
+    FUNCTION = "collect"
+    CATEGORY = "ByteArtist/image"
+
+    def collect(self, route_state, **images):
+        return collect_reference_batch(route_state, images)
+
+
+NODE_CLASS_MAPPINGS = {
+    "PeaceElitePrototypeRouter": PeaceElitePrototypeRouter,
+    "PeaceElitePEAssembler": PeaceElitePEAssembler,
+    "PeaceEliteReferenceBatch": PeaceEliteReferenceBatch,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "PeaceElitePrototypeRouter": "和平精英原型路由",
+    "PeaceElitePEAssembler": "和平精英原型 PE 组装",
+    "PeaceEliteReferenceBatch": "和平精英多参考图批次",
+}
