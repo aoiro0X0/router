@@ -73,44 +73,6 @@ shared PE must contain exactly one `<<<ACTIVE_PROTOTYPE_CONTEXT>>>` slot. The
 assembler replaces that slot with the ordered reference manifest and active
 modules, keeping the final output contract at the end of the system prompt.
 
-### Workflow-Embedded Reference Image
-
-This node keeps one static reference image inside the workflow JSON instead of
-depending on a room-local ComfyUI input filename. It has three widget inputs:
-
-- `image_name`: a stable label used only in validation errors.
-- `expected_sha256`: an optional SHA-256 digest of the original PNG, JPEG, or
-  WebP file bytes after Base64 decoding. A mismatch stops execution instead of
-  silently loading damaged workflow data.
-- `image_base64`: raw Base64 or a PNG, JPEG, or WebP Base64 data URI.
-
-The node performs strict Base64 decoding entirely in memory, verifies the
-optional digest, applies EXIF orientation, converts the image to RGB, and
-returns one standard ComfyUI `[1, H, W, 3]` float32 `IMAGE` in the `[0, 1]`
-range. It does not read a filesystem path, upload a file, or access the
-network. Alpha is intentionally discarded, matching the RGB `IMAGE` output of
-the classic static `LoadImage` path; this node does not emit a mask.
-
-Only single-frame PNG, JPEG, and WebP files are accepted. One encoded file is
-limited to 16 MiB, 16,777,216 decoded pixels, and 8,192 pixels on either edge.
-Malformed inputs rejected by the decoder, animated files, oversized files,
-unsupported formats, and hash mismatches fail explicitly. Production
-workflows should always fill `expected_sha256`; with that digest present, any
-byte-level truncation or modification is detected even if Pillow could still
-decode the remaining bytes.
-
-For the Peace Elite workflow, prepare every reference with its final Lanczos
-resize and centered edge padding before embedding it. The six embedded nodes
-can then connect directly to the ordered reference node, with no runtime
-resize nodes and no room-local image assets. Lossless WebP keeps those final
-pixels compact without changing them.
-
-Base64 is persistence, not encryption. Anyone who can read the workflow JSON
-can extract its images. Keep workflows containing proprietary references
-private. This public plugin repository contains only the decoder code and
-documentation; it must never contain workflow Base64, reference assets, or PE
-content.
-
 ### Peace Elite Ordered Reference List
 
 This node receives six independent reference images, selects only the matched
@@ -120,9 +82,7 @@ creates a pixel collage. Every selected input must contain exactly one image,
 and all selected images must have identical height, width, and channel count.
 Resize or pad inputs individually before this node when necessary. Preserve
 each reference's aspect ratio; do not stretch the source or combine multiple
-references into one canvas. If the workflow embeds already-finalized,
-same-sized references, connect them directly and omit the runtime resize
-nodes.
+references into one canvas.
 
 `OUTPUT_IS_LIST` deliberately remains false. ComfyUI therefore wraps the
 Python list as one payload and calls the downstream generation node once. Do
@@ -155,9 +115,6 @@ category_code + user_input
    `-> route_state
        |-> Peace Elite Prototype PE Assembler -> specialized system prompt
        `-> Peace Elite Ordered Reference List -> image generation node
-
-Workflow-Embedded Reference Image x 6
--> Peace Elite Ordered Reference List
 ```
 
 When no prototype is matched, `prototype_enabled` is `false`, the PE assembler
@@ -177,5 +134,4 @@ Restart ComfyUI and search for these nodes:
 - `和平精英原型路由（精简）`
 - `和平精英原型路由（兼容旧版）`
 - `和平精英原型 PE 组装`
-- `工作流内嵌参考图`
 - `和平精英有序多参考图列表`

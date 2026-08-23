@@ -1,10 +1,5 @@
-import base64
-import binascii
-import hashlib
-from io import BytesIO
 import json
 import re
-import warnings
 
 
 PROTOTYPES = (
@@ -61,14 +56,6 @@ PROTOTYPES = (
 
 PE_VERSION_LINE = re.compile(r"\APE_VERSION: v[0-9]+\.[0-9]+\.[0-9]+\s*(?:\r?\n)+")
 ACTIVE_PROTOTYPE_CONTEXT_SLOT = "<<<ACTIVE_PROTOTYPE_CONTEXT>>>"
-MAX_EMBEDDED_IMAGE_BYTES = 16 * 1024 * 1024
-MAX_EMBEDDED_IMAGE_PIXELS = 16 * 1024 * 1024
-MAX_EMBEDDED_IMAGE_DIMENSION = 8192
-SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
-IMAGE_DATA_URI = re.compile(
-    r"\Adata:image/(?:png|jpe?g|webp);base64,",
-    flags=re.IGNORECASE,
-)
 
 
 def _as_text(value):
@@ -142,115 +129,6 @@ def _validate_route_state(route_state):
     if route_state.get("schema_version") != 1:
         raise ValueError("不支持的和平精英原型路由状态版本。")
     return route_state
-
-
-def decode_embedded_image_bytes(image_base64, expected_sha256="", image_name=""):
-    """Decode one workflow-embedded image and optionally verify its source bytes."""
-    label = _as_text(image_name).strip() or "内嵌图片"
-    encoded = _as_text(image_base64)
-    max_encoded_chars = 4 * ((MAX_EMBEDDED_IMAGE_BYTES + 2) // 3)
-    max_source_chars = max_encoded_chars + max_encoded_chars // 32 + 256
-    if len(encoded) > max_source_chars:
-        raise ValueError(
-            f"{label}超过 {MAX_EMBEDDED_IMAGE_BYTES // (1024 * 1024)} MiB 的内嵌上限。"
-        )
-    encoded = encoded.strip()
-    if not encoded:
-        raise ValueError(f"{label}的 Base64 数据为空。")
-
-    if encoded.lower().startswith("data:"):
-        match = IMAGE_DATA_URI.match(encoded)
-        if match is None:
-            raise ValueError(f"{label}使用了不支持的图片 Data URI。")
-        encoded = encoded[match.end() :]
-
-    # Workflow JSON normally stores one uninterrupted string. Ignoring whitespace
-    # also keeps manually wrapped Base64 lossless while validate=True still rejects
-    # every non-Base64 character.
-    encoded = "".join(encoded.split())
-    if len(encoded) > max_encoded_chars:
-        raise ValueError(
-            f"{label}超过 {MAX_EMBEDDED_IMAGE_BYTES // (1024 * 1024)} MiB 的内嵌上限。"
-        )
-
-    try:
-        raw = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ValueError(f"{label}的 Base64 数据无效或已被截断。") from exc
-
-    if not raw:
-        raise ValueError(f"{label}解码后为空。")
-    if len(raw) > MAX_EMBEDDED_IMAGE_BYTES:
-        raise ValueError(
-            f"{label}超过 {MAX_EMBEDDED_IMAGE_BYTES // (1024 * 1024)} MiB 的内嵌上限。"
-        )
-
-    expected = _as_text(expected_sha256).strip().lower()
-    if expected:
-        if SHA256_HEX.fullmatch(expected) is None:
-            raise ValueError(f"{label}的 expected_sha256 必须是 64 位十六进制字符串。")
-        actual = hashlib.sha256(raw).hexdigest()
-        if actual != expected:
-            raise ValueError(
-                f"{label}的 SHA-256 校验失败；工作流中的图片数据可能已损坏。"
-            )
-
-    return raw
-
-
-def decode_embedded_image_array(image_base64, expected_sha256="", image_name=""):
-    """Decode one static image to ComfyUI's classic float32 RGB HWC contract."""
-    import numpy as np
-    from PIL import Image, ImageOps, UnidentifiedImageError
-
-    label = _as_text(image_name).strip() or "内嵌图片"
-    raw = decode_embedded_image_bytes(image_base64, expected_sha256, label)
-
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(raw)) as opened:
-                image_format = (opened.format or "").upper()
-                if image_format not in {"PNG", "JPEG", "WEBP"}:
-                    raise ValueError(
-                        f"{label}必须是 PNG、JPEG 或 WebP 静态图片。"
-                    )
-
-                frame_count = int(getattr(opened, "n_frames", 1))
-                if frame_count != 1:
-                    raise ValueError(
-                        f"{label}必须是单帧图片，当前包含 {frame_count} 帧。"
-                    )
-
-                width, height = opened.size
-                if width <= 0 or height <= 0:
-                    raise ValueError(f"{label}的图片尺寸无效。")
-                if (
-                    width > MAX_EMBEDDED_IMAGE_DIMENSION
-                    or height > MAX_EMBEDDED_IMAGE_DIMENSION
-                ):
-                    raise ValueError(
-                        f"{label}任一边不得超过 {MAX_EMBEDDED_IMAGE_DIMENSION} 像素。"
-                    )
-                if width * height > MAX_EMBEDDED_IMAGE_PIXELS:
-                    raise ValueError(
-                        f"{label}超过 {MAX_EMBEDDED_IMAGE_PIXELS:,} 像素的解码上限。"
-                    )
-
-                opened.load()
-                image = ImageOps.exif_transpose(opened)
-                if image.mode == "I":
-                    image = image.point(lambda value: value * (1 / 255))
-                image = image.convert("RGB")
-                array = np.array(image).astype(np.float32) / 255.0
-    except (Image.DecompressionBombWarning, Image.DecompressionBombError) as exc:
-        raise ValueError(f"{label}的图片尺寸触发 Pillow 安全限制。") from exc
-    except UnidentifiedImageError as exc:
-        raise ValueError(f"{label}不是 Pillow 可识别的图片。") from exc
-    except OSError as exc:
-        raise ValueError(f"{label}的图片文件不完整或无法解码。") from exc
-
-    return np.ascontiguousarray(array)
 
 
 def build_reference_manifest(route_state):
@@ -517,48 +395,11 @@ class PeaceEliteReferenceBatch:
         return collect_reference_batch(route_state, images)
 
 
-class PeaceEliteEmbeddedImage:
-    """Decode one losslessly embedded source file into a standard ComfyUI IMAGE."""
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "image_name": ("STRING", {"default": "embedded.png"}),
-                "expected_sha256": ("STRING", {"default": ""}),
-                "image_base64": (
-                    "STRING",
-                    {
-                        "default": "",
-                        "multiline": True,
-                        "dynamicPrompts": False,
-                    },
-                ),
-            }
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("image",)
-    FUNCTION = "load"
-    CATEGORY = "ByteArtist/image"
-
-    def load(self, image_name, expected_sha256, image_base64):
-        import torch
-
-        image = decode_embedded_image_array(
-            image_base64,
-            expected_sha256=expected_sha256,
-            image_name=image_name,
-        )
-        return (torch.from_numpy(image).unsqueeze(0),)
-
-
 NODE_CLASS_MAPPINGS = {
     "PeaceElitePrototypeRouter": PeaceElitePrototypeRouter,
     "PeaceElitePrototypeRouterCompact": PeaceElitePrototypeRouterCompact,
     "PeaceElitePEAssembler": PeaceElitePEAssembler,
     "PeaceEliteReferenceBatch": PeaceEliteReferenceBatch,
-    "PeaceEliteEmbeddedImage": PeaceEliteEmbeddedImage,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -566,5 +407,4 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PeaceElitePrototypeRouterCompact": "和平精英原型路由（精简）",
     "PeaceElitePEAssembler": "和平精英原型 PE 组装",
     "PeaceEliteReferenceBatch": "和平精英有序多参考图列表",
-    "PeaceEliteEmbeddedImage": "工作流内嵌参考图",
 }
