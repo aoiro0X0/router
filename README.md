@@ -7,7 +7,7 @@ category code is `"3"` and at least one approved trigger term is present.
 
 ## Nodes
 
-### Peace Elite Prototype Router
+### Peace Elite Prototype Router (Compact)
 
 Inputs:
 
@@ -22,10 +22,19 @@ Outputs:
   this package.
 - `prototype_enabled`: `true` when at least one prototype is matched. It can
   directly drive a Boolean switch between the generic and specialized paths.
-- Six independent Boolean outputs for resource gating and debugging.
-- `matched_names` and `matched_ids_json` for debugging.
 - `user_input_json`: a minimal JSON object containing only the original user
   input, ready for the specialized production LLM.
+
+The compact node deliberately exposes only these three runtime outputs. The
+ordered match set, canonical names, and per-prototype flags already exist in
+`route_state`, so duplicating them as visible sockets adds wiring clutter
+without changing execution.
+
+The original `PeaceElitePrototypeRouter` class remains registered as
+`和平精英原型路由（兼容旧版）`. It preserves the former output indices for
+workflows saved before the compact node was introduced. New workflows should
+use `PeaceElitePrototypeRouterCompact`, displayed as
+`和平精英原型路由（精简）`.
 
 The prototype IDs and exact substring allowlist are fixed:
 
@@ -122,6 +131,7 @@ ComfyUI/custom_nodes/comfyui_peace_elite_prototype_router
 
 Restart ComfyUI and search for these nodes:
 
-- `和平精英原型路由`
+- `和平精英原型路由（精简）`
+- `和平精英原型路由（兼容旧版）`
 - `和平精英原型 PE 组装`
 - `和平精英有序多参考图列表`

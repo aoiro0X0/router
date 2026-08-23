@@ -103,6 +103,26 @@ def build_route_state(category_code, user_input):
     }
 
 
+def _router_input_types():
+    return {
+        "required": {
+            "category_code": ("STRING", {"default": "", "forceInput": True}),
+            "user_input": (
+                "STRING",
+                {"default": "", "multiline": True, "forceInput": True},
+            ),
+        }
+    }
+
+
+def _build_user_input_json(route_state):
+    return json.dumps(
+        {"用户原词": route_state["user_input"]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
 def _validate_route_state(route_state):
     if not isinstance(route_state, dict):
         raise TypeError("route_state 必须来自 Peace Elite Prototype Router 节点。")
@@ -209,16 +229,11 @@ def collect_reference_batch(route_state, images):
 
 
 class PeaceElitePrototypeRouter:
-    """Route exact Peace Elite prototype mentions before Ark Search."""
+    """Legacy output contract retained for workflows saved before v0.3.0."""
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "category_code": ("STRING", {"default": "", "forceInput": True}),
-                "user_input": ("STRING", {"default": "", "multiline": True, "forceInput": True}),
-            }
-        }
+        return _router_input_types()
 
     RETURN_TYPES = (
         "PEACE_ELITE_ROUTE",
@@ -254,11 +269,7 @@ class PeaceElitePrototypeRouter:
         matched_keys = {item["key"] for item in state["matched"]}
         matched_names = "、".join(item["name"] for item in state["matched"])
         matched_ids = [item["id"] for item in state["matched"]]
-        user_input_json = json.dumps(
-            {"用户原词": state["user_input"]},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        user_input_json = _build_user_input_json(state)
         flags = [prototype["key"] in matched_keys for prototype in PROTOTYPES]
 
         return (
@@ -269,6 +280,31 @@ class PeaceElitePrototypeRouter:
             json.dumps(matched_ids, separators=(",", ":")),
             user_input_json,
         )
+
+
+class PeaceElitePrototypeRouterCompact:
+    """Expose only the three outputs required by current workflows."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return _router_input_types()
+
+    RETURN_TYPES = (
+        "PEACE_ELITE_ROUTE",
+        "BOOLEAN",
+        "STRING",
+    )
+    RETURN_NAMES = (
+        "route_state",
+        "prototype_enabled",
+        "user_input_json",
+    )
+    FUNCTION = "route"
+    CATEGORY = "ByteArtist/logic"
+
+    def route(self, category_code, user_input):
+        state = build_route_state(category_code, user_input)
+        return state, state["enabled"], _build_user_input_json(state)
 
 
 class PeaceElitePEAssembler:
@@ -361,12 +397,14 @@ class PeaceEliteReferenceBatch:
 
 NODE_CLASS_MAPPINGS = {
     "PeaceElitePrototypeRouter": PeaceElitePrototypeRouter,
+    "PeaceElitePrototypeRouterCompact": PeaceElitePrototypeRouterCompact,
     "PeaceElitePEAssembler": PeaceElitePEAssembler,
     "PeaceEliteReferenceBatch": PeaceEliteReferenceBatch,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "PeaceElitePrototypeRouter": "和平精英原型路由",
+    "PeaceElitePrototypeRouter": "和平精英原型路由（兼容旧版）",
+    "PeaceElitePrototypeRouterCompact": "和平精英原型路由（精简）",
     "PeaceElitePEAssembler": "和平精英原型 PE 组装",
     "PeaceEliteReferenceBatch": "和平精英有序多参考图列表",
 }
