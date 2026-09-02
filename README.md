@@ -7,6 +7,29 @@ category code is `"3"` and at least one approved trigger term is present.
 
 ## Nodes
 
+### Policy Router variants
+
+`PeaceElitePrototypePolicyRouterCompact` and
+`PeaceElitePrototypePolicyRouter` add a third `llm_decision` input while still
+reading the original category and user text. They treat the short LLM output
+as a semantic suggestion, then deterministically override false negatives for
+pure prototype combinations and reject high-value, brand-asset, and known
+positive biological/vehicle/scene/facility mixed-subject requests. Negated
+extras and explicit comparisons remain eligible for semantic handling.
+The compact variant is used by the current 1-diamond workflow; the
+output-stable variant is used by the current 99-diamond workflow.
+
+### Game UGC Route Policy Guard
+
+`GameUGCRoutePolicyGuard` validates the schema-v2 subject route after the
+generic route LLM. It receives both the LLM output and original user text,
+normalizes traditional characters, whitespace and the diamond emoji for
+policy matching, and hard-locks high-value or brand-asset requests to TEXT.
+It outputs the validated marker-plus-JSON string for module selection and the
+same route as plain JSON for `production_brief` parsing. Invalid JSON and
+unrelated generic fallbacks are replaced with a safe text route derived from
+the user's own wording rather than a fixed phrase.
+
 ### Peace Elite Prototype Router (Compact)
 
 Inputs:
@@ -131,6 +154,9 @@ ComfyUI/custom_nodes/comfyui_peace_elite_prototype_router
 
 Restart ComfyUI and search for these nodes:
 
+- `和平精英原型策略路由（精简）`
+- `和平精英原型策略路由（兼容输出）`
+- `游戏 UGC 路由策略护栏`
 - `和平精英原型路由（精简）`
 - `和平精英原型路由（兼容旧版）`
 - `和平精英原型 PE 组装`

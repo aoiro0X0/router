@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 
 
 PROTOTYPES = (
@@ -56,6 +57,378 @@ PROTOTYPES = (
 
 PE_VERSION_LINE = re.compile(r"\APE_VERSION: v[0-9]+\.[0-9]+\.[0-9]+\s*(?:\r?\n)+")
 ACTIVE_PROTOTYPE_CONTEXT_SLOT = "<<<ACTIVE_PROTOTYPE_CONTEXT>>>"
+
+ALLOWED_ROUTE_CONSTRAINTS = {
+    "HIGH_VALUE",
+    "BRAND_ASSET",
+    "BIOLOGICAL",
+    "VEHICLE",
+    "SCENE",
+    "FACILITY",
+    "OVER_BUDGET",
+}
+
+_TRADITIONAL_POLICY_TRANSLATION = str.maketrans(
+    {
+        "黃": "黄",
+        "鑽": "钻",
+        "級": "级",
+        "頭": "头",
+        "盔": "盔",
+        "純": "纯",
+        "鍍": "镀",
+        "寶": "宝",
+        "滿": "满",
+        "現": "现",
+        "錶": "表",
+    }
+)
+
+_SAFE_VALUE_CONTEXTS = (
+    re.compile(r"金色(?:配色|涂装|喷漆)"),
+    re.compile(r"金黄色"),
+    re.compile(r"(?:黄金|钻石)(?:段位|排位|局)"),
+)
+
+_HIGH_VALUE_TERMS = (
+    "钻戒",
+    "黄金",
+    "纯金",
+    "足金",
+    "24k",
+    "镀金",
+    "鎏金",
+    "钻石",
+    "镶钻",
+    "满钻",
+    "碎钻",
+    "宝石",
+    "珠宝",
+    "金条",
+    "现金堆",
+    "大额现金",
+    "奢华限量",
+    "奢侈限量",
+    "收藏级",
+)
+
+_BRAND_ASSET_PATTERNS = (
+    re.compile(r"logo", re.IGNORECASE),
+    re.compile(r"商标(?:图形)?"),
+    re.compile(r"品牌(?:图标|标志|logo)", re.IGNORECASE),
+    re.compile(r"官方标准字"),
+    re.compile(r"商业字标"),
+    re.compile(r"品牌吉祥物"),
+)
+
+_GENERIC_FALLBACK_TEXTS = {"心意收到", "心意", "收到", "自定义礼物", "礼物"}
+
+# High-confidence extra subjects that must not be silently dropped merely
+# because the same input also names one of the six fixed prototypes. This is
+# deliberately a narrow bypass guard, not a replacement for the generic LLM
+# subject router.
+_PROTOTYPE_FORBIDDEN_REMAINDER_TERMS = (
+    "企鹅",
+    "金毛犬",
+    "小狗",
+    "狗狗",
+    "猫咪",
+    "兔兔",
+    "大象",
+    "老虎",
+    "狮子",
+    "狼王",
+    "风暴龙王",
+    "人物",
+    "角色",
+    "皮肤",
+    "幼崽",
+    "跑车",
+    "汽车",
+    "赛车",
+    "摩托车",
+    "自行车",
+    "游轮",
+    "邮轮",
+    "轮船",
+    "飞船",
+    "飞机",
+    "直升机",
+    "坦克",
+    "载具",
+    "交通工具",
+    "镜面空间",
+    "无限空间",
+    "场景",
+    "环境",
+    "建筑",
+    "城堡",
+    "宫殿",
+    "城市",
+    "森林",
+    "海洋",
+    "天空",
+    "宇宙",
+    "摩天轮",
+    "过山车",
+    "游乐园",
+    "体育馆",
+    "大型装置",
+    "大型设施",
+)
+
+
+def normalize_policy_text(value):
+    """Normalize only for policy matching; never use this as displayed user text."""
+    text = unicodedata.normalize("NFKC", _as_text(value)).translate(
+        _TRADITIONAL_POLICY_TRANSLATION
+    )
+    text = text.replace("💎", "钻石")
+    return re.sub(r"\s+", "", text).lower()
+
+
+def detect_policy_constraints(user_input):
+    """Return deterministic high-confidence constraints without rewriting the input."""
+    normalized = normalize_policy_text(user_input)
+    value_scan = normalized
+    for pattern in _SAFE_VALUE_CONTEXTS:
+        value_scan = pattern.sub("", value_scan)
+
+    constraints = []
+    if any(term in value_scan for term in _HIGH_VALUE_TERMS):
+        constraints.append("HIGH_VALUE")
+    if any(pattern.search(normalized) for pattern in _BRAND_ASSET_PATTERNS):
+        constraints.append("BRAND_ASSET")
+    return constraints
+
+
+def _matched_prototype_terms(user_input):
+    text = _as_text(user_input)
+    matches = []
+    for prototype in PROTOTYPES:
+        matched = next((term for term in prototype["terms"] if term in text), None)
+        if matched:
+            matches.append(matched)
+    return matches
+
+
+def _is_prototype_only_request(user_input, matched_terms):
+    """Recognize stable prototype-only wording that the short LLM may not veto."""
+    remainder = normalize_policy_text(user_input)
+    for term in sorted(matched_terms, key=len, reverse=True):
+        remainder = remainder.replace(normalize_policy_text(term), "")
+
+    removable_phrases = (
+        "和平精英",
+        "金色配色",
+        "金色涂装",
+        "金色喷漆",
+        "金黄色",
+        "黄金段位",
+        "钻石段位",
+        "黄金排位",
+        "钻石排位",
+        "黄金局",
+        "钻石局",
+        "不要",
+        "只要",
+        "以及",
+        "还有",
+        "拿着",
+        "持握",
+        "戴着",
+        "佩戴",
+        "穿着",
+        "背着",
+        "装备",
+        "换上",
+        "脱下",
+        "打开",
+        "破损",
+        "损坏",
+        "全新",
+        "旋转",
+        "翻转",
+        "碰撞",
+        "格挡",
+        "和",
+        "与",
+        "及",
+        "加",
+        "拿",
+        "戴",
+        "穿",
+        "背",
+        "装",
+        "开",
+        "掉落",
+        "落下",
+        "砸",
+        "挡",
+        "的",
+    )
+    for phrase in removable_phrases:
+        remainder = remainder.replace(phrase, "")
+    remainder = re.sub(r"[，。！？、,.;:：；!?()（）\[\]【】<>《》\-—_]+", "", remainder)
+    return not remainder
+
+
+def _has_forbidden_prototype_remainder(user_input, matched_terms):
+    """Catch stable positive mixed subjects while preserving negation/comparisons."""
+    remainder = normalize_policy_text(user_input)
+    # “不要企鹅，只要三级头” keeps the prototype and must not be treated as a
+    # positive penguin request. Conversely “不要三级头，只要跑车” leaves the
+    # vehicle in the remainder and therefore closes the prototype path.
+    remainder = re.sub(r"不要.*?(?=只要)", "", remainder)
+    # “三级头像跑车一样快” is a comparison, not a request to draw the car.
+    remainder = re.sub(r"像[^，。；,.;]{1,24}(?:一样|似的)", "", remainder)
+    for term in sorted(matched_terms, key=len, reverse=True):
+        remainder = remainder.replace(normalize_policy_text(term), "")
+    return any(term in remainder for term in _PROTOTYPE_FORBIDDEN_REMAINDER_TERMS)
+
+
+def guard_prototype_category(category_code, user_input, llm_decision):
+    """Combine deterministic prototype facts with the semantic LLM's narrow decision."""
+    if _as_text(category_code).strip() != "3":
+        return "0"
+    matched_terms = _matched_prototype_terms(user_input)
+    if not matched_terms:
+        return "0"
+    if detect_policy_constraints(user_input):
+        return "0"
+    if _has_forbidden_prototype_remainder(user_input, matched_terms):
+        return "0"
+    if _is_prototype_only_request(user_input, matched_terms):
+        return "3"
+    return "3" if _as_text(llm_decision).strip() == "3" else "0"
+
+
+def _extract_json_object(value):
+    text = _as_text(value)
+    start = text.find("{")
+    if start < 0:
+        return None
+    try:
+        result, _ = json.JSONDecoder().raw_decode(text[start:])
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _visible_length(value):
+    return len(re.sub(r"\s+", "", _as_text(value)))
+
+
+def _compact_user_anchor(user_input):
+    original = _as_text(user_input).strip()
+    compact = re.sub(r"\s+", "", original)
+    if 1 <= len(compact) <= 8:
+        return compact
+
+    quoted = re.search(r"[“\"']([^”\"']{2,8})[”\"']", original)
+    if quoted:
+        return re.sub(r"\s+", "", quoted.group(1))
+
+    if "只要" in compact:
+        tail = compact.rsplit("只要", 1)[1]
+        tail = re.split(r"[，。；,.;]", tail, maxsplit=1)[0]
+        if 1 <= len(tail) <= 8:
+            return tail
+
+    requested = re.search(
+        r"(?:生成|画出|制作|做成|变成)(?:一个|一件|一枚|一只|完整)?([^，。；,.;]{2,8})",
+        compact,
+    )
+    if requested:
+        return requested.group(1)
+
+    reduced = compact
+    for phrase in ("旁边有", "旁边", "以及", "还有", "和", "与", "加"):
+        reduced = reduced.replace(phrase, "")
+    reduced = re.sub(r"[^\u3400-\u9fffA-Za-z0-9💎]+", "", reduced)
+    return (reduced or "输入内容")[:6]
+
+
+def _safe_display_text(user_input, route):
+    original = re.sub(r"\s+", "", _as_text(user_input).strip())
+    if 1 <= len(original) <= 8:
+        return original, "EXACT_INPUT"
+
+    candidate = _as_text(route.get("display_text") if route else "").strip()
+    if (
+        1 <= _visible_length(candidate) <= 12
+        and candidate not in _GENERIC_FALLBACK_TEXTS
+    ):
+        source = _as_text(route.get("text_source")).strip()
+        if source not in {
+            "EXACT_INPUT",
+            "EXPLICIT_TEXT",
+            "EXACT_EXTRACT",
+            "SEMANTIC_SUMMARY",
+        }:
+            source = "SEMANTIC_SUMMARY"
+        return candidate, source
+    return _compact_user_anchor(user_input), "SEMANTIC_SUMMARY"
+
+
+def _build_text_route(user_input, route, constraints):
+    display_text, text_source = _safe_display_text(user_input, route or {})
+    input_kind = _as_text((route or {}).get("input_kind")).strip()
+    if input_kind not in {"TERM", "REQUEST", "DESIGN_BRIEF"}:
+        input_kind = "TERM" if _visible_length(user_input) <= 8 else "REQUEST"
+    constraint_text = "、".join(constraints) if constraints else "OVER_BUDGET"
+    brief = (
+        f"主体为TEXT；展示文字为“{display_text}”，逐字准确；"
+        f"硬约束为{constraint_text}；只把受限对象保留为可见字符语义，"
+        "使用价值中性的主题化字骨、组字和非物象整合装饰，不生成对应物象、局部、材质、包装、标识、场景或特效。"
+    )
+    return {
+        "schema_version": 2,
+        "type": "TEXT",
+        "mode": "TEXT",
+        "input_kind": input_kind,
+        "focus": display_text,
+        "constraints": constraints or ["OVER_BUDGET"],
+        "display_text": display_text,
+        "text_source": text_source,
+        "production_brief": brief,
+    }
+
+
+def guard_route_output(llm_output, user_input):
+    """Validate the semantic compiler and hard-lock deterministic policy outcomes."""
+    route = _extract_json_object(llm_output)
+    detected = detect_policy_constraints(user_input)
+    existing = route.get("constraints", []) if isinstance(route, dict) else []
+    constraints = []
+    for item in [*existing, *detected]:
+        if item in ALLOWED_ROUTE_CONSTRAINTS and item not in constraints:
+            constraints.append(item)
+
+    valid = (
+        isinstance(route, dict)
+        and route.get("schema_version") == 2
+        and route.get("type") in {"OBJECT", "DIORAMA", "TEXT"}
+        and route.get("mode") in {"NATIVE", "REPRESENTATIVE", "TEXT"}
+        and isinstance(route.get("production_brief"), str)
+        and bool(route.get("production_brief", "").strip())
+    )
+    hard_text = any(item in constraints for item in ("HIGH_VALUE", "BRAND_ASSET"))
+    unrelated_fallback = (
+        valid
+        and route.get("type") == "TEXT"
+        and _as_text(route.get("display_text")).strip() in _GENERIC_FALLBACK_TEXTS
+        and _as_text(route.get("display_text")).strip() not in _as_text(user_input)
+    )
+
+    if not valid or hard_text or unrelated_fallback:
+        route = _build_text_route(user_input, route if isinstance(route, dict) else {}, constraints)
+    else:
+        route["constraints"] = constraints
+
+    marker = f'<<<SUBJECT_{route["type"]}>>>'
+    route_json = json.dumps(route, ensure_ascii=False, separators=(",", ":"))
+    return f"{marker}\n{route_json}", route_json
 
 
 def _as_text(value):
@@ -307,6 +680,70 @@ class PeaceElitePrototypeRouterCompact:
         return state, state["enabled"], _build_user_input_json(state)
 
 
+def _policy_router_input_types():
+    return {
+        "required": {
+            "category_code": ("STRING", {"default": "", "forceInput": True}),
+            "user_input": (
+                "STRING",
+                {"default": "", "multiline": True, "forceInput": True},
+            ),
+            "llm_decision": ("STRING", {"default": "", "forceInput": True}),
+        }
+    }
+
+
+class PeaceElitePrototypePolicyRouter(PeaceElitePrototypeRouter):
+    """Legacy-output router with a deterministic guard around the semantic decision."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return _policy_router_input_types()
+
+    def route(self, category_code, user_input, llm_decision):
+        guarded = guard_prototype_category(category_code, user_input, llm_decision)
+        return super().route(guarded, user_input)
+
+
+class PeaceElitePrototypePolicyRouterCompact(PeaceElitePrototypeRouterCompact):
+    """Compact-output router with deterministic prototype and value-policy enforcement."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return _policy_router_input_types()
+
+    def route(self, category_code, user_input, llm_decision):
+        guarded = guard_prototype_category(category_code, user_input, llm_decision)
+        return super().route(guarded, user_input)
+
+
+class GameUGCRoutePolicyGuard:
+    """Validate route JSON and force deterministic brand/value outcomes to TEXT."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "llm_output": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "user_input": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING")
+    RETURN_NAMES = ("validated_output", "route_json")
+    FUNCTION = "guard"
+    CATEGORY = "ByteArtist/logic"
+
+    def guard(self, llm_output, user_input):
+        return guard_route_output(llm_output, user_input)
+
+
 class PeaceElitePEAssembler:
     """Assemble the common PE, ordered reference bindings, and active prototype modules."""
 
@@ -398,13 +835,19 @@ class PeaceEliteReferenceBatch:
 NODE_CLASS_MAPPINGS = {
     "PeaceElitePrototypeRouter": PeaceElitePrototypeRouter,
     "PeaceElitePrototypeRouterCompact": PeaceElitePrototypeRouterCompact,
+    "PeaceElitePrototypePolicyRouter": PeaceElitePrototypePolicyRouter,
+    "PeaceElitePrototypePolicyRouterCompact": PeaceElitePrototypePolicyRouterCompact,
     "PeaceElitePEAssembler": PeaceElitePEAssembler,
     "PeaceEliteReferenceBatch": PeaceEliteReferenceBatch,
+    "GameUGCRoutePolicyGuard": GameUGCRoutePolicyGuard,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "PeaceElitePrototypeRouter": "和平精英原型路由（兼容旧版）",
     "PeaceElitePrototypeRouterCompact": "和平精英原型路由（精简）",
+    "PeaceElitePrototypePolicyRouter": "和平精英原型策略路由（兼容旧版）",
+    "PeaceElitePrototypePolicyRouterCompact": "和平精英原型策略路由（精简）",
     "PeaceElitePEAssembler": "和平精英原型 PE 组装",
     "PeaceEliteReferenceBatch": "和平精英有序多参考图列表",
+    "GameUGCRoutePolicyGuard": "游戏 UGC 主体路由策略护栏",
 }
