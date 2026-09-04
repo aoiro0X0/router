@@ -68,6 +68,47 @@ ALLOWED_ROUTE_CONSTRAINTS = {
     "OVER_BUDGET",
 }
 
+PLANNER_OVER_BUDGET_CONSTRAINTS = {
+    "HIGH_VALUE",
+    "BIOLOGICAL",
+    "VEHICLE",
+    "SCENE",
+    "FACILITY",
+    "OVER_BUDGET",
+}
+
+PLANNER_BUDGET_STATUSES = {
+    "WITHIN_99",
+    "OVER_99",
+    "HARD_RESTRICTED",
+    "NOT_APPLICABLE",
+}
+
+PLANNER_REPRESENTATIVE_STATUSES = {
+    "NOT_NEEDED",
+    "PASS",
+    "FAIL",
+    "PROHIBITED",
+}
+
+PLANNER_SEMANTIC_LOSS_TERMS = (
+    "丢失",
+    "改义",
+    "无法承接",
+    "不能承接",
+    "无法表达",
+    "不能表达",
+    "核心对象",
+    "核心动作",
+    "核心状态",
+    "核心关系",
+    "核心身份",
+    "核心含义",
+    "核心语义",
+    "核心结果",
+    "核心气质",
+)
+
 _TRADITIONAL_POLICY_TRANSLATION = str.maketrans(
     {
         "黃": "黄",
@@ -176,80 +217,6 @@ _PROTOTYPE_FORBIDDEN_REMAINDER_TERMS = (
     "大型装置",
     "大型设施",
 )
-
-# Ordinary low-value support props that may remain subordinate to a bound
-# prototype in the 99-diamond workflow. They do not receive a reference image;
-# high-value, brand, biological, vehicle, scene and facility guards still win.
-_99_ALLOWED_SUPPORT_OBJECT_TERMS = (
-    "akm",
-    "m416",
-    "枪械",
-    "步枪",
-    "冲锋枪",
-    "狙击枪",
-    "手枪",
-    "枪",
-    "刀",
-    "弓弩",
-    "手雷",
-    "地雷",
-    "手机",
-    "电子产品",
-    "吉他",
-    "乐器",
-    "魔法杖",
-    "宝箱",
-    "无人机",
-    "瞄准镜",
-)
-
-_99_PROTOTYPE_ACTION_TERMS = (
-    "落地",
-    "奔跑",
-    "冲刺",
-    "起跳",
-    "跳跃",
-    "跳舞",
-    "弯腰",
-    "鞠躬",
-    "摔倒",
-    "跌倒",
-    "欢呼",
-    "尖叫",
-    "杂耍",
-    "躲闪",
-    "探头",
-    "追赶",
-    "逃跑",
-    "挥舞",
-    "摇摆",
-    "翻滚",
-    "站立",
-    "坐下",
-    "趴下",
-    "躺下",
-    "奔入",
-    "冲入",
-    "飞入",
-    "滑入",
-    "跌入",
-    "跳入",
-    "画外",
-    "画内",
-    "快速",
-    "缓慢",
-    "突然",
-    "原地",
-    "向前",
-    "向后",
-    "向左",
-    "向右",
-    "随后",
-    "然后",
-    "再",
-    "后",
-)
-
 
 def normalize_policy_text(value):
     """Normalize only for policy matching; never use this as displayed user text."""
@@ -403,7 +370,7 @@ def guard_prototype_category(category_code, user_input, llm_decision):
 
 
 def guard_prototype_category_strict(category_code, user_input, llm_decision):
-    """99-diamond guard: keep prototype actions and affordable support props."""
+    """Current-tier guard: literal prototype hits win without an LLM veto."""
     if _as_text(category_code).strip() != "3":
         return "0"
     matched_terms = _matched_prototype_terms(user_input)
@@ -413,13 +380,7 @@ def guard_prototype_category_strict(category_code, user_input, llm_decision):
         return "0"
     if _has_forbidden_prototype_remainder(user_input, matched_terms):
         return "0"
-    if _is_prototype_only_request(
-        user_input,
-        matched_terms,
-        (*_99_ALLOWED_SUPPORT_OBJECT_TERMS, *_99_PROTOTYPE_ACTION_TERMS),
-    ):
-        return "3"
-    return guard_prototype_category(category_code, user_input, llm_decision)
+    return "3"
 
 
 def _extract_json_object(value):
@@ -967,7 +928,9 @@ def _planner_name(user_input, route):
     return source[:6], [source[:6]], "SAFE_FALLBACK"
 
 
-def _planner_text_spec(user_input, route, constraints):
+def _planner_text_spec(
+    user_input, route, constraints, hard_restricted=False, price_diamonds=99
+):
     display_text, _ = _safe_display_text(user_input, route or {})
     display_text = _normalize_name_piece(display_text)[:12] or "礼物"
     base = dict(route) if isinstance(route, dict) else {}
@@ -979,6 +942,13 @@ def _planner_text_spec(user_input, route, constraints):
             "search_query": "",
             "search_reason": "",
             "prototype_decision": "0",
+            "budget_status": (
+                "HARD_RESTRICTED" if hard_restricted else f"OVER_{price_diamonds}"
+            ),
+            "representative_candidates": [],
+            "representative_selected": "",
+            "representative_status": "PROHIBITED" if hard_restricted else "FAIL",
+            "representative_failure_reason": "" if hard_restricted else "上游规格无效，未能完成代表物审计",
             "render_mode": "TEXT",
             "subject_mode": "TEXT",
             "visual_subject": display_text,
@@ -993,8 +963,54 @@ def _planner_text_spec(user_input, route, constraints):
     return base
 
 
-def guard_planner_output(llm_output, user_input):
-    """Validate the v3 planner contract and keep search/name decisions compact."""
+def _planner_representative_audit(route, price_diamonds=99):
+    budget_status = _as_text(route.get("budget_status")).strip()
+    representative_status = _as_text(route.get("representative_status")).strip()
+    candidates = route.get("representative_candidates", [])
+    allowed_budget_statuses = {
+        f"WITHIN_{price_diamonds}",
+        f"OVER_{price_diamonds}",
+        "HARD_RESTRICTED",
+        "NOT_APPLICABLE",
+    }
+    if budget_status not in allowed_budget_statuses:
+        raise ValueError("PlannerSpec budget_status is missing or invalid")
+    if representative_status not in PLANNER_REPRESENTATIVE_STATUSES:
+        raise ValueError("PlannerSpec representative_status is missing or invalid")
+    if not isinstance(candidates, list) or len(candidates) > 3:
+        raise ValueError("PlannerSpec representative_candidates must contain 0-3 items")
+
+    normalized_candidates = []
+    for candidate in candidates:
+        value = _as_text(candidate).strip()[:80]
+        if value and value not in normalized_candidates:
+            normalized_candidates.append(value)
+    selected = _as_text(route.get("representative_selected")).strip()[:80]
+    failure_reason = _as_text(route.get("representative_failure_reason")).strip()[:200]
+    return (
+        budget_status,
+        representative_status,
+        normalized_candidates,
+        selected,
+        failure_reason,
+    )
+
+
+def guard_planner_output(
+    llm_output, user_input, price_diamonds=99, category_code=""
+):
+    """Validate the v3 PlannerSpec and enforce the selected price-tier policy."""
+    try:
+        price_diamonds = int(price_diamonds)
+    except (TypeError, ValueError) as error:
+        raise ValueError("price_diamonds must be 1 or 99") from error
+    if price_diamonds not in {1, 99}:
+        raise ValueError("price_diamonds must be 1 or 99")
+    within_status = f"WITHIN_{price_diamonds}"
+    over_status = f"OVER_{price_diamonds}"
+    forced_prototype = (
+        guard_prototype_category_strict(category_code, user_input, "0") == "3"
+    )
     route = _extract_json_object(llm_output)
     detected = detect_policy_constraints(user_input)
     existing = route.get("constraints", []) if isinstance(route, dict) else []
@@ -1013,18 +1029,144 @@ def guard_planner_output(llm_output, user_input):
         in {"DIRECT", "REPRESENTATIVE", "RELATION", "TEXT"}
         and _as_text(route.get("prototype_decision")).strip() in {"3", "0"}
     )
-    hard_text = any(item in constraints for item in ("HIGH_VALUE", "BRAND_ASSET"))
-    if not valid or hard_text:
+    hard_restricted = "BRAND_ASSET" in constraints
+    if not valid and not hard_restricted:
+        raise ValueError("PlannerSpec is invalid; refusing silent TEXT fallback")
+    if hard_restricted:
         route = _planner_text_spec(
             user_input,
             route if isinstance(route, dict) else {},
             constraints,
+            hard_restricted=True,
+            price_diamonds=price_diamonds,
         )
     else:
         route = dict(route)
         route["schema_version"] = 3
         route["user_input"] = _as_text(user_input)
+
+        prototype_decision = (
+            "3"
+            if forced_prototype
+            else _as_text(route.get("prototype_decision")).strip()
+        )
+        if any(item in constraints for item in ("HIGH_VALUE", "BRAND_ASSET")):
+            prototype_decision = "0"
+        route["prototype_decision"] = prototype_decision
+
+        if forced_prototype and prototype_decision == "3":
+            state = build_route_state("3", user_input)
+            matched_names = []
+            for match in state.get("matched", []):
+                name = _as_text(match.get("name")).strip()
+                if name and name not in matched_names:
+                    matched_names.append(name)
+            if not matched_names:
+                raise ValueError("forced prototype route has no matched prototype")
+            route["render_mode"] = "OBJECT"
+            route["subject_mode"] = (
+                "RELATION" if len(matched_names) > 1 else "DIRECT"
+            )
+            route["visual_subject"] = "、".join(matched_names)
+            route["entities"] = matched_names[:4]
+            route["relation"] = (
+                _as_text(user_input).strip()[:160]
+                if len(matched_names) > 1
+                else ""
+            )
+            route["action_intent"] = _as_text(user_input).strip()[:160]
+            route.pop("display_text", None)
+
+        claimed_budget = _as_text(route.get("budget_status")).strip()
+        if prototype_decision == "3":
+            constraints = [] if forced_prototype else [
+                item for item in constraints if item != "OVER_BUDGET"
+            ]
+        elif claimed_budget == over_status or any(
+            item in PLANNER_OVER_BUDGET_CONSTRAINTS for item in constraints
+        ):
+            if "OVER_BUDGET" not in constraints:
+                constraints.append("OVER_BUDGET")
         route["constraints"] = constraints
+
+        (
+            budget_status,
+            representative_status,
+            candidates,
+            selected,
+            failure_reason,
+        ) = _planner_representative_audit(route, price_diamonds)
+
+        if prototype_decision == "3":
+            if (
+                route["render_mode"] != "OBJECT"
+                or route["subject_mode"] not in {"DIRECT", "RELATION"}
+            ):
+                raise ValueError("Prototype PlannerSpec must stay OBJECT DIRECT/RELATION")
+            budget_status = within_status
+            representative_status = "NOT_NEEDED"
+            candidates = []
+            selected = ""
+            failure_reason = ""
+        elif "OVER_BUDGET" in constraints:
+            budget_status = over_status
+            if representative_status == "PASS":
+                if (
+                    route["render_mode"] != "OBJECT"
+                    or route["subject_mode"] != "REPRESENTATIVE"
+                    or not candidates
+                    or not selected
+                    or selected not in candidates
+                ):
+                    raise ValueError(
+                        f"{over_status} PASS must select one evaluated representative"
+                    )
+                route["visual_subject"] = selected
+                route["entities"] = [selected]
+                route["relation"] = ""
+                failure_reason = ""
+            elif representative_status == "FAIL":
+                if (
+                    route["render_mode"] != "TEXT"
+                    or route["subject_mode"] != "TEXT"
+                    or not candidates
+                    or not failure_reason
+                    or len(failure_reason) < 8
+                    or not any(
+                        term in failure_reason for term in PLANNER_SEMANTIC_LOSS_TERMS
+                    )
+                    or selected
+                ):
+                    raise ValueError(
+                        f"{over_status} TEXT requires audited candidates and a concrete failure"
+                    )
+            else:
+                raise ValueError(
+                    f"{over_status} must PASS a representative or FAIL explicitly to TEXT"
+                )
+        elif route["render_mode"] == "TEXT":
+            if budget_status != "NOT_APPLICABLE" or representative_status != "NOT_NEEDED":
+                raise ValueError("Non-budget TEXT must be NOT_APPLICABLE + NOT_NEEDED")
+            candidates = []
+            selected = ""
+            failure_reason = ""
+        else:
+            if (
+                route["subject_mode"] not in {"DIRECT", "RELATION"}
+                or budget_status != within_status
+                or representative_status != "NOT_NEEDED"
+            ):
+                raise ValueError("Within-budget OBJECT must be DIRECT/RELATION + NOT_NEEDED")
+            candidates = []
+            selected = ""
+            failure_reason = ""
+
+        route["budget_status"] = budget_status
+        route["representative_candidates"] = candidates
+        route["representative_selected"] = selected
+        route["representative_status"] = representative_status
+        route["representative_failure_reason"] = failure_reason
+
         if route["render_mode"] == "TEXT":
             route["subject_mode"] = "TEXT"
             display_text, _ = _safe_display_text(user_input, route)
@@ -1054,9 +1196,11 @@ def guard_planner_output(llm_output, user_input):
             if _as_text(item).strip()
         ]
 
-        prototype_decision = _as_text(route.get("prototype_decision")).strip()
-        route["prototype_decision"] = prototype_decision
-        need_search = bool(route.get("need_search")) and prototype_decision == "0"
+        need_search = (
+            bool(route.get("need_search"))
+            and prototype_decision == "0"
+            and not any(item in constraints for item in ("HIGH_VALUE", "BRAND_ASSET"))
+        )
         search_query = _as_text(route.get("search_query")).strip()[:160]
         route["need_search"] = bool(need_search and search_query)
         route["search_query"] = search_query if route["need_search"] else ""
@@ -1081,6 +1225,11 @@ def guard_planner_output(llm_output, user_input):
         "search_query",
         "search_reason",
         "prototype_decision",
+        "budget_status",
+        "representative_candidates",
+        "representative_selected",
+        "representative_status",
+        "representative_failure_reason",
         "render_mode",
         "subject_mode",
         "visual_subject",
@@ -1117,7 +1266,14 @@ class GameUGCPlannerPolicyGuard:
                     "STRING",
                     {"default": "", "multiline": True, "forceInput": True},
                 ),
-            }
+                "price_diamonds": ("INT", {"default": 99, "min": 1, "max": 99}),
+            },
+            "optional": {
+                "category_code": (
+                    "STRING",
+                    {"default": "", "forceInput": True},
+                ),
+            },
         }
 
     RETURN_TYPES = ("STRING", "STRING", "BOOLEAN", "STRING")
@@ -1130,12 +1286,14 @@ class GameUGCPlannerPolicyGuard:
     FUNCTION = "guard"
     CATEGORY = "ByteArtist/logic"
 
-    def guard(self, llm_output, user_input):
-        return guard_planner_output(llm_output, user_input)
+    def guard(self, llm_output, user_input, price_diamonds=99, category_code=""):
+        return guard_planner_output(
+            llm_output, user_input, price_diamonds, category_code
+        )
 
 
 class GameUGCImagePromptTextGuard:
-    """Block TEXT image generation unless the exact Planner text is locked."""
+    """Prepend the exact Planner text while allowing natural LLM wording."""
 
     @classmethod
     def INPUT_TYPES(cls):

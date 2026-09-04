@@ -27,13 +27,14 @@ deterministic routing nodes.
 
 `PeaceElitePrototypePolicyRouterCompact` and
 `PeaceElitePrototypePolicyRouter` add a third `llm_decision` input while still
-reading the original category and user text. They treat the short LLM output
-as a semantic suggestion, then deterministically override false negatives for
-pure prototype combinations and reject high-value, brand-asset, and known
-positive biological/vehicle/scene/facility mixed-subject requests. Negated
-extras and explicit comparisons remain eligible for semantic handling.
-The compact variant is used by the current 1-diamond workflow; the
-output-stable variant is used by the current 99-diamond workflow.
+reading the original category and user text. The full-output policy router,
+used by the current 1- and 99-diamond workflows, restores literal hard
+recognition: category `"3"` plus any exact six-prototype allowlist hit enables
+the prototype route even when the LLM says `0`. Deterministic high-value,
+brand-asset, person, other-creature, vehicle, scene, building, and facility
+guards still close the route. The compact policy router retains its older
+semantic-suggestion behavior for compatibility but is not used by the current
+1- or 99-diamond candidates.
 
 ### Game UGC Route Policy Guard
 
@@ -49,13 +50,13 @@ the user's own wording rather than a fixed phrase.
 ### Game UGC Planner Policy Guard
 
 `GameUGCPlannerPolicyGuard` validates the schema-v3 `ProductionSpec` used by
-the conditional-search workflow. It deterministically enforces the latest
-value and brand locks, limits the public gift name to at most six visible
-characters selected from ordered source spans in the original input, and
-allows search only when a non-empty search query is present. The same node can
-be used before and after the lazy Web Search switch: the first instance emits
-`need_search`, while the second validates either the Planner result or the
-search-enriched replacement without requiring another aggregation LLM.
+the conditional-search workflow. `price_diamonds` selects the `WITHIN_1 /
+OVER_1` or `WITHIN_99 / OVER_99` audit vocabulary. When the optional raw
+`category_code` input is connected, category `"3"` plus a safe literal
+prototype hit deterministically rewrites an LLM false TEXT or over-budget
+result to an OBJECT prototype spec and disables search. The same node is used
+before and after the lazy Web Search switch, so the hard decision reaches both
+the search control and the downstream image/motion context.
 
 Outputs:
 
@@ -63,8 +64,8 @@ Outputs:
   module selection.
 - `spec_json`: the same protected spec as plain JSON.
 - `need_search`: the Boolean control for a lazy Web Search switch.
-- `prototype_decision`: the Planner's `3` or `0` suggestion for the
-  deterministic Peace Elite policy router.
+- `prototype_decision`: the protected `3` or `0` decision; with raw category
+  connected, a safe literal hit is already hard-corrected to `3`.
 
 ### Game UGC TEXT Image Prompt Guard
 
