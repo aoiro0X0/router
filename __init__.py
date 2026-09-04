@@ -61,6 +61,7 @@ ACTIVE_PROTOTYPE_CONTEXT_SLOT = "<<<ACTIVE_PROTOTYPE_CONTEXT>>>"
 ALLOWED_ROUTE_CONSTRAINTS = {
     "HIGH_VALUE",
     "BRAND_ASSET",
+    "IDENTITY_SUBJECT",
     "BIOLOGICAL",
     "VEHICLE",
     "SCENE",
@@ -70,6 +71,7 @@ ALLOWED_ROUTE_CONSTRAINTS = {
 
 PLANNER_OVER_BUDGET_CONSTRAINTS = {
     "HIGH_VALUE",
+    "IDENTITY_SUBJECT",
     "BIOLOGICAL",
     "VEHICLE",
     "SCENE",
@@ -164,29 +166,6 @@ _BRAND_ASSET_PATTERNS = (
 
 _GENERIC_FALLBACK_TEXTS = {"心意收到", "心意", "收到", "自定义礼物", "礼物"}
 
-# Exact high-confidence terms for which production has already demonstrated a
-# repeatable LLM failure: the Planner returns a formally valid audited TEXT
-# even though one safe, value-neutral representative is obvious. Keep this
-# map deliberately narrow. Composite requests still need semantic planning so
-# a deterministic rescue cannot silently delete another requested subject.
-_EXACT_REPRESENTATIVE_RESCUES = {
-    "丘丘人": {
-        "candidates": ["丘丘木面具", "粗木棒"],
-        "selected": "丘丘木面具",
-        "constraints": ["BIOLOGICAL", "OVER_BUDGET"],
-    },
-    "托儿索": {
-        "candidates": ["疾风武士刀", "青色风纹刀鞘"],
-        "selected": "疾风武士刀",
-        "constraints": ["BIOLOGICAL", "OVER_BUDGET"],
-    },
-    "非洲之心": {
-        "candidates": ["粗砺红矿石", "红色矿石碎片"],
-        "selected": "粗砺红矿石",
-        "constraints": ["HIGH_VALUE", "OVER_BUDGET"],
-    },
-}
-
 # High-confidence extra subjects that must not be silently dropped merely
 # because the same input also names one of the six fixed prototypes. This is
 # deliberately a narrow bypass guard, not a replacement for the generic LLM
@@ -263,11 +242,6 @@ def detect_policy_constraints(user_input):
     if any(pattern.search(normalized) for pattern in _BRAND_ASSET_PATTERNS):
         constraints.append("BRAND_ASSET")
     return constraints
-
-
-def _exact_representative_rescue(user_input):
-    """Return a safe representative only for an exact production-approved term."""
-    return _EXACT_REPRESENTATIVE_RESCUES.get(normalize_policy_text(user_input))
 
 
 def _matched_prototype_terms(user_input):
@@ -455,21 +429,40 @@ _LEADING_TEXT_DISPLAY_INSTRUCTION = re.compile(
 )
 
 
-def guard_image_prompt_text(image_prompt, spec_json):
-    """Prepend the protected Planner text without policing LLM wording."""
+def guard_image_prompt_text(image_prompt, spec_json, user_input=""):
+    """Return a runnable image prompt even when either upstream LLM drifts."""
     prompt = _as_text(image_prompt).strip()
-    if not prompt:
-        raise ValueError("IMAGE_PROMPT is empty")
-
     spec = _extract_json_object(spec_json)
     if not isinstance(spec, dict) or spec.get("schema_version") != 3:
-        raise ValueError("PlannerSpec is invalid for IMAGE_PROMPT validation")
+        if prompt:
+            return prompt
+        display_text = _normalize_name_piece(user_input)[:12] or "礼物"
+        return (
+            f"{IMAGE_PROMPT_MAIN_PREFIX} "
+            f"{_text_display_instruction(display_text)} "
+            "设计为清楚、完整、居中的商业游戏字标，纯黑色背景。"
+        )
     if spec.get("render_mode") != "TEXT":
-        return prompt
+        if prompt:
+            return prompt
+        subject = (
+            _as_text(spec.get("visual_subject")).strip()
+            or _as_text(user_input).strip()
+            or _as_text(spec.get("gift_name")).strip()
+            or "礼物"
+        )
+        return (
+            f"{IMAGE_PROMPT_MAIN_PREFIX} {subject}，主体居中、完整入画，"
+            "高级风格化3D动画电影质感，纯黑色背景。"
+        )
 
-    display_text = _as_text(spec.get("display_text")).strip()
-    if not display_text:
-        raise ValueError("TEXT PlannerSpec display_text is empty")
+    display_text = (
+        _as_text(spec.get("display_text")).strip()
+        or _normalize_name_piece(user_input)[:12]
+        or _as_text(spec.get("visual_subject")).strip()
+        or _as_text(spec.get("gift_name")).strip()
+        or "礼物"
+    )
 
     body = prompt
     if body.startswith(IMAGE_PROMPT_MAIN_PREFIX):
@@ -479,7 +472,9 @@ def guard_image_prompt_text(image_prompt, spec_json):
     protected_prefix = (
         f"{IMAGE_PROMPT_MAIN_PREFIX} {_text_display_instruction(display_text)}"
     )
-    return f"{protected_prefix} {body}" if body else protected_prefix
+    if not body:
+        body = "设计为清楚、完整、居中的商业游戏字标，纯黑色背景。"
+    return f"{protected_prefix} {body}"
 
 
 def _compact_user_anchor(user_input):
@@ -1024,8 +1019,34 @@ def _planner_representative_audit(route, price_diamonds=99):
     )
 
 
-def guard_planner_output(
-    llm_output, user_input, price_diamonds=99, category_code=""
+def _needs_identity_representative_resolution(route, constraints):
+    """Return true when a single identity subject is trying to reach TEXT too early."""
+    if (
+        route.get("render_mode") != "TEXT"
+        or _as_text(route.get("representative_status")).strip() != "FAIL"
+        or not any(item in constraints for item in ("BIOLOGICAL", "IDENTITY_SUBJECT"))
+    ):
+        return False
+    entities = route.get("entities", [])
+    if not isinstance(entities, list):
+        entities = []
+    entities = [item for item in entities if _as_text(item).strip()]
+    subject_categories = {
+        item for item in constraints if item in {"BIOLOGICAL", "VEHICLE", "SCENE", "FACILITY"}
+    }
+    return (
+        len(entities) <= 1
+        and len(subject_categories) <= 1
+        and not _as_text(route.get("relation")).strip()
+    )
+
+
+def _guard_planner_output_strict(
+    llm_output,
+    user_input,
+    price_diamonds=99,
+    category_code="",
+    guard_stage="FINAL",
 ):
     """Validate the v3 PlannerSpec and enforce the selected price-tier policy."""
     try:
@@ -1034,6 +1055,9 @@ def guard_planner_output(
         raise ValueError("price_diamonds must be 1 or 99") from error
     if price_diamonds not in {1, 99}:
         raise ValueError("price_diamonds must be 1 or 99")
+    guard_stage = _as_text(guard_stage).strip().upper() or "FINAL"
+    if guard_stage not in {"PRE_SEARCH", "FINAL"}:
+        raise ValueError("guard_stage must be PRE_SEARCH or FINAL")
     within_status = f"WITHIN_{price_diamonds}"
     over_status = f"OVER_{price_diamonds}"
     forced_prototype = (
@@ -1041,7 +1065,6 @@ def guard_planner_output(
     )
     route = _extract_json_object(llm_output)
     detected = detect_policy_constraints(user_input)
-    representative_rescue = _exact_representative_rescue(user_input)
     existing = route.get("constraints", []) if isinstance(route, dict) else []
     constraints = []
     if not isinstance(existing, list):
@@ -1058,11 +1081,6 @@ def guard_planner_output(
         in {"DIRECT", "REPRESENTATIVE", "RELATION", "TEXT"}
         and _as_text(route.get("prototype_decision")).strip() in {"3", "0"}
     )
-    # For an exact approved rescue, do not let an LLM-invented BRAND_ASSET
-    # constraint turn the term into text. A brand request detected from the
-    # raw user input still wins and cannot be bypassed.
-    if representative_rescue and "BRAND_ASSET" not in detected:
-        constraints = list(representative_rescue["constraints"])
     hard_restricted = "BRAND_ASSET" in constraints
     if not valid and not hard_restricted:
         raise ValueError("PlannerSpec is invalid; refusing silent TEXT fallback")
@@ -1110,27 +1128,6 @@ def guard_planner_output(
             )
             route["action_intent"] = _as_text(user_input).strip()[:160]
             route.pop("display_text", None)
-        elif representative_rescue:
-            candidates = list(representative_rescue["candidates"])
-            selected = representative_rescue["selected"]
-            route["need_search"] = False
-            route["search_query"] = ""
-            route["search_reason"] = ""
-            route["prototype_decision"] = "0"
-            route["budget_status"] = over_status
-            route["representative_candidates"] = candidates
-            route["representative_selected"] = selected
-            route["representative_status"] = "PASS"
-            route["representative_failure_reason"] = ""
-            route["render_mode"] = "OBJECT"
-            route["subject_mode"] = "REPRESENTATIVE"
-            route["visual_subject"] = selected
-            route["entities"] = [selected]
-            route["relation"] = ""
-            route["action_intent"] = ""
-            route["evidence"] = []
-            route.pop("display_text", None)
-
         claimed_budget = _as_text(route.get("budget_status")).strip()
         if prototype_decision == "3":
             constraints = [] if forced_prototype else [
@@ -1221,6 +1218,29 @@ def guard_planner_output(
         route["representative_status"] = representative_status
         route["representative_failure_reason"] = failure_reason
 
+        identity_resolution_pending = _needs_identity_representative_resolution(
+            route, constraints
+        )
+        if identity_resolution_pending:
+            if guard_stage == "PRE_SEARCH":
+                route["need_search"] = True
+                if not _as_text(route.get("search_query")).strip():
+                    subject = normalize_policy_text(user_input)[:80]
+                    route["search_query"] = (
+                        f"{subject} 标志性装备 道具 信物 代表物"
+                    )
+                route["search_reason"] = (
+                    "先确认身份主体的稳定低价代表物，再决定是否允许文字降级"
+                )
+            else:
+                evidence = route.get("evidence", [])
+                if not isinstance(evidence, list) or not any(
+                    _as_text(item).strip() for item in evidence
+                ):
+                    raise ValueError(
+                        "identity subject cannot reach TEXT before representative search"
+                    )
+
         if route["render_mode"] == "TEXT":
             route["subject_mode"] = "TEXT"
             display_text, _ = _safe_display_text(user_input, route)
@@ -1253,7 +1273,12 @@ def guard_planner_output(
         need_search = (
             bool(route.get("need_search"))
             and prototype_decision == "0"
-            and not any(item in constraints for item in ("HIGH_VALUE", "BRAND_ASSET"))
+            and "BRAND_ASSET" not in constraints
+            and (
+                "HIGH_VALUE" not in constraints
+                or "IDENTITY_SUBJECT" in constraints
+                or "BIOLOGICAL" in constraints
+            )
         )
         search_query = _as_text(route.get("search_query")).strip()[:160]
         route["need_search"] = bool(need_search and search_query)
@@ -1305,8 +1330,115 @@ def guard_planner_output(
     )
 
 
+def _planner_runnable_fallback(user_input, price_diamonds=99, category_code=""):
+    """Build a deterministic spec instead of stopping on arbitrary LLM output."""
+    try:
+        price_diamonds = int(price_diamonds)
+    except (TypeError, ValueError):
+        price_diamonds = 99
+    if price_diamonds not in {1, 99}:
+        price_diamonds = 99
+
+    forced_prototype = (
+        guard_prototype_category_strict(category_code, user_input, "0") == "3"
+    )
+    if forced_prototype:
+        state = build_route_state("3", user_input)
+        matched_names = [
+            _as_text(item.get("name")).strip()
+            for item in state.get("matched", [])
+            if _as_text(item.get("name")).strip()
+        ]
+        if matched_names:
+            route = {
+                "schema_version": 3,
+                "user_input": _as_text(user_input),
+                "need_search": False,
+                "search_query": "",
+                "search_reason": "",
+                "prototype_decision": "3",
+                "budget_status": f"WITHIN_{price_diamonds}",
+                "representative_candidates": [],
+                "representative_selected": "",
+                "representative_status": "NOT_NEEDED",
+                "representative_failure_reason": "",
+                "render_mode": "OBJECT",
+                "subject_mode": "RELATION" if len(matched_names) > 1 else "DIRECT",
+                "visual_subject": "、".join(matched_names),
+                "entities": matched_names[:4],
+                "relation": _as_text(user_input).strip()[:160] if len(matched_names) > 1 else "",
+                "action_intent": _as_text(user_input).strip()[:160],
+                "constraints": [],
+                "evidence": [],
+            }
+        else:
+            forced_prototype = False
+
+    if not forced_prototype:
+        display_text = _normalize_name_piece(user_input)[:12] or "礼物"
+        route = {
+            "schema_version": 3,
+            "user_input": _as_text(user_input),
+            "need_search": False,
+            "search_query": "",
+            "search_reason": "",
+            "prototype_decision": "0",
+            "budget_status": "NOT_APPLICABLE",
+            "representative_candidates": [],
+            "representative_selected": "",
+            "representative_status": "NOT_NEEDED",
+            "representative_failure_reason": "",
+            "render_mode": "TEXT",
+            "subject_mode": "TEXT",
+            "visual_subject": display_text,
+            "entities": [display_text],
+            "relation": "",
+            "action_intent": "",
+            "constraints": [],
+            "display_text": display_text,
+            "evidence": [],
+        }
+
+    gift_name, sources, name_mode = _planner_name(user_input, route)
+    route["gift_name"] = gift_name
+    route["name_source"] = sources
+    route["name_mode"] = name_mode
+    marker = f'<<<SUBJECT_{route["render_mode"]}>>>'
+    spec_json = json.dumps(route, ensure_ascii=False, separators=(",", ":"))
+    return (
+        f"{marker}\n{spec_json}",
+        spec_json,
+        route["need_search"],
+        route["prototype_decision"],
+    )
+
+
+def guard_planner_output(
+    llm_output,
+    user_input,
+    price_diamonds=99,
+    category_code="",
+    guard_stage="FINAL",
+):
+    """Normalize Planner output; never stop the workflow for LLM drift."""
+    try:
+        return _guard_planner_output_strict(
+            llm_output,
+            user_input,
+            price_diamonds,
+            category_code,
+            guard_stage,
+        )
+    except Exception:
+        return _planner_runnable_fallback(
+            user_input,
+            price_diamonds,
+            category_code,
+        )
+
+
 class GameUGCPlannerPolicyGuard:
-    """Validate v3 PlannerSpec, exact-source gift names, and conditional search."""
+    """Validate v3 PlannerSpec and enforce pre-search/final degradation order."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1321,6 +1453,10 @@ class GameUGCPlannerPolicyGuard:
                     {"default": "", "multiline": True, "forceInput": True},
                 ),
                 "price_diamonds": ("INT", {"default": 99, "min": 1, "max": 99}),
+                "guard_stage": (
+                    ["FINAL", "PRE_SEARCH"],
+                    {"default": "FINAL"},
+                ),
             },
             "optional": {
                 "category_code": (
@@ -1340,14 +1476,25 @@ class GameUGCPlannerPolicyGuard:
     FUNCTION = "guard"
     CATEGORY = "ByteArtist/logic"
 
-    def guard(self, llm_output, user_input, price_diamonds=99, category_code=""):
+    def guard(
+        self,
+        llm_output,
+        user_input,
+        price_diamonds=99,
+        guard_stage="FINAL",
+        category_code="",
+    ):
         return guard_planner_output(
-            llm_output, user_input, price_diamonds, category_code
+            llm_output,
+            user_input,
+            price_diamonds,
+            category_code,
+            guard_stage,
         )
 
 
 class GameUGCImagePromptTextGuard:
-    """Prepend the exact Planner text while allowing natural LLM wording."""
+    """Prepend exact text and keep running when the Image Director drifts."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1361,6 +1508,12 @@ class GameUGCImagePromptTextGuard:
                     "STRING",
                     {"default": "", "multiline": True, "forceInput": True},
                 ),
+            },
+            "optional": {
+                "user_input": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
             }
         }
 
@@ -1369,8 +1522,8 @@ class GameUGCImagePromptTextGuard:
     FUNCTION = "guard"
     CATEGORY = "ByteArtist/logic"
 
-    def guard(self, image_prompt, spec_json):
-        return (guard_image_prompt_text(image_prompt, spec_json),)
+    def guard(self, image_prompt, spec_json, user_input=""):
+        return (guard_image_prompt_text(image_prompt, spec_json, user_input),)
 
 
 class PeaceElitePEAssembler:

@@ -58,11 +58,15 @@ result to an OBJECT prototype spec and disables search. The same node is used
 before and after the lazy Web Search switch, so the hard decision reaches both
 the search control and the downstream image/motion context.
 
-The guard also has three deliberately exact representative rescues for
-production-observed false TEXT fallbacks: `丘丘人` selects `丘丘木面具`, `托儿索`
-selects `疾风武士刀`, and `非洲之心` selects `粗砺红矿石`. These activate only
-when the normalized full input equals one of those terms. Composite requests
-remain under the normal semantic Planner and safety policy.
+The guard enforces representative resolution as a general stage order rather
+than maintaining a term-to-object patch list. A `PRE_SEARCH` guard turns a
+failed single biological or `IDENTITY_SUBJECT` representative attempt into a
+lazy search request. If either Planner returns malformed, incomplete, or
+internally inconsistent output, the guard produces a deterministic runnable
+spec from the original user input instead of raising an exception. Safe literal
+prototype hits still become OBJECT specs; other unrecoverable results preserve
+the original input as TEXT. Brand assets remain prohibited, and composite
+relations stay under semantic planning.
 
 Outputs:
 
@@ -82,10 +86,11 @@ The Image Director does not need to copy a fixed sentence or calculate a
 character count, and natural layout wording such as “the first two
 characters” is accepted. A matching legacy lock at the beginning is removed
 before the new instruction is prepended, preventing duplicate migration
-text. Empty prompts, invalid Planner specs, and empty `display_text` values
-still raise errors. Non-TEXT prompts pass through unchanged. The same
-normalized prompt should also feed the Motion Director context so still-image
-generation and animation planning share one source.
+text. Empty prompts, invalid Planner specs, and empty `display_text` values are
+recovered into a minimal runnable prompt, using the optional original user input
+as the final literal fallback. Non-empty non-TEXT prompts pass through
+unchanged. The same normalized prompt should also feed the Motion Director
+context so still-image generation and animation planning share one source.
 
 ### Peace Elite Prototype Router (Compact)
 
