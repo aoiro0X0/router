@@ -452,8 +452,22 @@ def _text_display_lock(display_text):
     )
 
 
+def _text_display_instruction(display_text):
+    return (
+        f"画面唯一可见文字必须逐字为「{display_text}」，"
+        "不得增删、替换、翻译或生成其他文字。"
+    )
+
+
+_LEADING_TEXT_DISPLAY_INSTRUCTION = re.compile(
+    r"\A画面唯一可见文字必须逐字为「[^」]*」，"
+    r"(?:共(?:\d+|[零〇一二两三四五六七八九十百]+)个可见字符，)?"
+    r"不得增删、替换、翻译或生成其他文字。\s*"
+)
+
+
 def guard_image_prompt_text(image_prompt, spec_json):
-    """Require the Planner's exact TEXT payload before image generation."""
+    """Prepend the protected Planner text without policing LLM wording."""
     prompt = _as_text(image_prompt).strip()
     if not prompt:
         raise ValueError("IMAGE_PROMPT is empty")
@@ -468,21 +482,15 @@ def guard_image_prompt_text(image_prompt, spec_json):
     if not display_text:
         raise ValueError("TEXT PlannerSpec display_text is empty")
 
-    required_start = f"{IMAGE_PROMPT_MAIN_PREFIX} {_text_display_lock(display_text)}"
-    if not prompt.startswith(required_start):
-        raise ValueError(
-            "TEXT IMAGE_PROMPT must start with the exact display_text and visible-character lock"
-        )
+    body = prompt
+    if body.startswith(IMAGE_PROMPT_MAIN_PREFIX):
+        body = body[len(IMAGE_PROMPT_MAIN_PREFIX) :].lstrip()
+    body = _LEADING_TEXT_DISPLAY_INSTRUCTION.sub("", body, count=1).strip()
 
-    remainder = prompt[len(required_start) :].replace(display_text, "")
-    conflicting_count = re.search(
-        r"(?:\d+|[零〇一二两三四五六七八九十百]+)"
-        r"(?:个(?:可见)?字符|个字|字)",
-        remainder,
+    protected_prefix = (
+        f"{IMAGE_PROMPT_MAIN_PREFIX} {_text_display_instruction(display_text)}"
     )
-    if conflicting_count:
-        raise ValueError("TEXT IMAGE_PROMPT contains a conflicting character-count claim")
-    return prompt
+    return f"{protected_prefix} {body}" if body else protected_prefix
 
 
 def _compact_user_anchor(user_input):

@@ -11,8 +11,8 @@ deterministic capabilities:
 
 - schema-v3 Planner validation, source-faithful gift naming, value/brand
   protection, and the lazy-search Boolean decision;
-- deterministic TEXT image-prompt validation against the protected Planner
-  `display_text` and its whitespace-free visible-character count;
+- deterministic TEXT image-prompt normalization that prepends the protected
+  Planner `display_text` without requiring the LLM to copy a fixed template;
 - schema-v2 generic subject-route protection for compatible workflows;
 - Peace Elite prototype matching plus final policy arbitration;
 - active prototype PE assembly and ordered reference-image selection.
@@ -69,14 +69,16 @@ Outputs:
 ### Game UGC TEXT Image Prompt Guard
 
 `GameUGCImagePromptTextGuard` sits between the extracted Image Director prompt
-and the image generator. For `render_mode=TEXT`, it requires the prompt to
-start with the fixed main image prefix followed immediately by the exact
-Planner `display_text`, its whitespace-free visible-character count, and the
-fixed no-rewrite instruction. Missing or rewritten text, a wrong count, or a
-second count claim raises an error before image generation. Non-TEXT prompts
-pass through unchanged. The same validated prompt should also feed the Motion
-Director context so still-image generation and animation planning share one
-source.
+and the image generator. For `render_mode=TEXT`, it prepends the fixed main
+image prefix and the exact protected Planner `display_text` automatically.
+The Image Director does not need to copy a fixed sentence or calculate a
+character count, and natural layout wording such as “the first two
+characters” is accepted. A matching legacy lock at the beginning is removed
+before the new instruction is prepended, preventing duplicate migration
+text. Empty prompts, invalid Planner specs, and empty `display_text` values
+still raise errors. Non-TEXT prompts pass through unchanged. The same
+normalized prompt should also feed the Motion Director context so still-image
+generation and animation planning share one source.
 
 ### Peace Elite Prototype Router (Compact)
 
