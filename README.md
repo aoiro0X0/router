@@ -5,6 +5,20 @@ workflows. It evaluates the client category code and the original user input
 before Ark Search. The specialized prototype path is enabled only when the
 category code is `"3"` and at least one approved trigger term is present.
 
+This repository is the complete public routing-node bundle used by the
+current Game UGC workflows. One installation registers all of the following
+deterministic capabilities:
+
+- schema-v3 Planner validation, source-faithful gift naming, value/brand
+  protection, and the lazy-search Boolean decision;
+- schema-v2 generic subject-route protection for compatible workflows;
+- Peace Elite prototype matching plus final policy arbitration;
+- active prototype PE assembly and ordered reference-image selection.
+
+The Web Search plugin and the Planner/Image/Motion LLM nodes remain separate
+runtime dependencies. They are model/tool execution nodes rather than
+deterministic routing nodes.
+
 ## Nodes
 
 ### Policy Router variants
@@ -166,7 +180,8 @@ list. The workflow should continue through the generic Ark Search path.
 
 ## Installation
 
-Copy this directory to the ByteArtist ComfyUI custom node directory:
+Clone or copy this entire repository into the ByteArtist ComfyUI custom node
+directory. No second routing repository is required:
 
 ```text
 ComfyUI/custom_nodes/comfyui_peace_elite_prototype_router
