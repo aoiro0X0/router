@@ -438,6 +438,53 @@ def _visible_length(value):
     return len(re.sub(r"\s+", "", _as_text(value)))
 
 
+IMAGE_PROMPT_MAIN_PREFIX = (
+    "3D render, premium stylized 3D animated, high-end animation-film "
+    "rendering, live gift icon quality."
+)
+
+
+def _text_display_lock(display_text):
+    return (
+        f"画面唯一可见文字必须逐字为「{display_text}」，"
+        f"共{_visible_length(display_text)}个可见字符，"
+        "不得增删、替换、翻译或生成其他文字。"
+    )
+
+
+def guard_image_prompt_text(image_prompt, spec_json):
+    """Require the Planner's exact TEXT payload before image generation."""
+    prompt = _as_text(image_prompt).strip()
+    if not prompt:
+        raise ValueError("IMAGE_PROMPT is empty")
+
+    spec = _extract_json_object(spec_json)
+    if not isinstance(spec, dict) or spec.get("schema_version") != 3:
+        raise ValueError("PlannerSpec is invalid for IMAGE_PROMPT validation")
+    if spec.get("render_mode") != "TEXT":
+        return prompt
+
+    display_text = _as_text(spec.get("display_text")).strip()
+    if not display_text:
+        raise ValueError("TEXT PlannerSpec display_text is empty")
+
+    required_start = f"{IMAGE_PROMPT_MAIN_PREFIX} {_text_display_lock(display_text)}"
+    if not prompt.startswith(required_start):
+        raise ValueError(
+            "TEXT IMAGE_PROMPT must start with the exact display_text and visible-character lock"
+        )
+
+    remainder = prompt[len(required_start) :].replace(display_text, "")
+    conflicting_count = re.search(
+        r"(?:\d+|[零〇一二两三四五六七八九十百]+)"
+        r"(?:个(?:可见)?字符|个字|字)",
+        remainder,
+    )
+    if conflicting_count:
+        raise ValueError("TEXT IMAGE_PROMPT contains a conflicting character-count claim")
+    return prompt
+
+
 def _compact_user_anchor(user_input):
     original = _as_text(user_input).strip()
     compact = re.sub(r"\s+", "", original)
@@ -1079,6 +1126,33 @@ class GameUGCPlannerPolicyGuard:
         return guard_planner_output(llm_output, user_input)
 
 
+class GameUGCImagePromptTextGuard:
+    """Block TEXT image generation unless the exact Planner text is locked."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image_prompt": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "spec_json": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("validated_prompt",)
+    FUNCTION = "guard"
+    CATEGORY = "ByteArtist/logic"
+
+    def guard(self, image_prompt, spec_json):
+        return (guard_image_prompt_text(image_prompt, spec_json),)
+
+
 class PeaceElitePEAssembler:
     """Assemble the common PE, ordered reference bindings, and active prototype modules."""
 
@@ -1176,6 +1250,7 @@ NODE_CLASS_MAPPINGS = {
     "PeaceEliteReferenceBatch": PeaceEliteReferenceBatch,
     "GameUGCRoutePolicyGuard": GameUGCRoutePolicyGuard,
     "GameUGCPlannerPolicyGuard": GameUGCPlannerPolicyGuard,
+    "GameUGCImagePromptTextGuard": GameUGCImagePromptTextGuard,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -1187,4 +1262,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PeaceEliteReferenceBatch": "和平精英有序多参考图列表",
     "GameUGCRoutePolicyGuard": "游戏 UGC 主体路由策略护栏",
     "GameUGCPlannerPolicyGuard": "游戏 UGC Planner 策略护栏",
+    "GameUGCImagePromptTextGuard": "游戏 UGC TEXT 图像提示词护栏",
 }

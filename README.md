@@ -11,6 +11,8 @@ deterministic capabilities:
 
 - schema-v3 Planner validation, source-faithful gift naming, value/brand
   protection, and the lazy-search Boolean decision;
+- deterministic TEXT image-prompt validation against the protected Planner
+  `display_text` and its whitespace-free visible-character count;
 - schema-v2 generic subject-route protection for compatible workflows;
 - Peace Elite prototype matching plus final policy arbitration;
 - active prototype PE assembly and ordered reference-image selection.
@@ -63,6 +65,18 @@ Outputs:
 - `need_search`: the Boolean control for a lazy Web Search switch.
 - `prototype_decision`: the Planner's `3` or `0` suggestion for the
   deterministic Peace Elite policy router.
+
+### Game UGC TEXT Image Prompt Guard
+
+`GameUGCImagePromptTextGuard` sits between the extracted Image Director prompt
+and the image generator. For `render_mode=TEXT`, it requires the prompt to
+start with the fixed main image prefix followed immediately by the exact
+Planner `display_text`, its whitespace-free visible-character count, and the
+fixed no-rewrite instruction. Missing or rewritten text, a wrong count, or a
+second count claim raises an error before image generation. Non-TEXT prompts
+pass through unchanged. The same validated prompt should also feed the Motion
+Director context so still-image generation and animation planning share one
+source.
 
 ### Peace Elite Prototype Router (Compact)
 
@@ -193,6 +207,7 @@ Restart ComfyUI and search for these nodes:
 - `和平精英原型策略路由（兼容输出）`
 - `游戏 UGC 路由策略护栏`
 - `游戏 UGC Planner 策略护栏`
+- `游戏 UGC TEXT 图像提示词护栏`
 - `和平精英原型路由（精简）`
 - `和平精英原型路由（兼容旧版）`
 - `和平精英原型 PE 组装`
