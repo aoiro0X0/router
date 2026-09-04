@@ -30,6 +30,26 @@ same route as plain JSON for `production_brief` parsing. Invalid JSON and
 unrelated generic fallbacks are replaced with a safe text route derived from
 the user's own wording rather than a fixed phrase.
 
+### Game UGC Planner Policy Guard
+
+`GameUGCPlannerPolicyGuard` validates the schema-v3 `ProductionSpec` used by
+the conditional-search workflow. It deterministically enforces the latest
+value and brand locks, limits the public gift name to at most six visible
+characters selected from ordered source spans in the original input, and
+allows search only when a non-empty search query is present. The same node can
+be used before and after the lazy Web Search switch: the first instance emits
+`need_search`, while the second validates either the Planner result or the
+search-enriched replacement without requiring another aggregation LLM.
+
+Outputs:
+
+- `validated_output`: the marker-plus-JSON `ProductionSpec` for downstream
+  module selection.
+- `spec_json`: the same protected spec as plain JSON.
+- `need_search`: the Boolean control for a lazy Web Search switch.
+- `prototype_decision`: the Planner's `3` or `0` suggestion for the
+  deterministic Peace Elite policy router.
+
 ### Peace Elite Prototype Router (Compact)
 
 Inputs:
@@ -157,6 +177,7 @@ Restart ComfyUI and search for these nodes:
 - `和平精英原型策略路由（精简）`
 - `和平精英原型策略路由（兼容输出）`
 - `游戏 UGC 路由策略护栏`
+- `游戏 UGC Planner 策略护栏`
 - `和平精英原型路由（精简）`
 - `和平精英原型路由（兼容旧版）`
 - `和平精英原型 PE 组装`

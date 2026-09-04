@@ -177,6 +177,79 @@ _PROTOTYPE_FORBIDDEN_REMAINDER_TERMS = (
     "大型设施",
 )
 
+# Ordinary low-value support props that may remain subordinate to a bound
+# prototype in the 99-diamond workflow. They do not receive a reference image;
+# high-value, brand, biological, vehicle, scene and facility guards still win.
+_99_ALLOWED_SUPPORT_OBJECT_TERMS = (
+    "akm",
+    "m416",
+    "枪械",
+    "步枪",
+    "冲锋枪",
+    "狙击枪",
+    "手枪",
+    "枪",
+    "刀",
+    "弓弩",
+    "手雷",
+    "地雷",
+    "手机",
+    "电子产品",
+    "吉他",
+    "乐器",
+    "魔法杖",
+    "宝箱",
+    "无人机",
+    "瞄准镜",
+)
+
+_99_PROTOTYPE_ACTION_TERMS = (
+    "落地",
+    "奔跑",
+    "冲刺",
+    "起跳",
+    "跳跃",
+    "跳舞",
+    "弯腰",
+    "鞠躬",
+    "摔倒",
+    "跌倒",
+    "欢呼",
+    "尖叫",
+    "杂耍",
+    "躲闪",
+    "探头",
+    "追赶",
+    "逃跑",
+    "挥舞",
+    "摇摆",
+    "翻滚",
+    "站立",
+    "坐下",
+    "趴下",
+    "躺下",
+    "奔入",
+    "冲入",
+    "飞入",
+    "滑入",
+    "跌入",
+    "跳入",
+    "画外",
+    "画内",
+    "快速",
+    "缓慢",
+    "突然",
+    "原地",
+    "向前",
+    "向后",
+    "向左",
+    "向右",
+    "随后",
+    "然后",
+    "再",
+    "后",
+)
+
 
 def normalize_policy_text(value):
     """Normalize only for policy matching; never use this as displayed user text."""
@@ -212,7 +285,7 @@ def _matched_prototype_terms(user_input):
     return matches
 
 
-def _is_prototype_only_request(user_input, matched_terms):
+def _is_prototype_only_request(user_input, matched_terms, extra_phrases=()):
     """Recognize stable prototype-only wording that the short LLM may not veto."""
     remainder = normalize_policy_text(user_input)
     for term in sorted(matched_terms, key=len, reverse=True):
@@ -240,6 +313,28 @@ def _is_prototype_only_request(user_input, matched_terms):
         "佩戴",
         "穿着",
         "背着",
+        "抱着",
+        "举着",
+        "扛着",
+        "顶着",
+        "叼着",
+        "挂着",
+        "踩着",
+        "坐在",
+        "靠着",
+        "放在",
+        "装进",
+        "跳进去",
+        "跳出来",
+        "撞向",
+        "砸向",
+        "抛出",
+        "接住",
+        "旁边",
+        "里面",
+        "外面",
+        "一起",
+        "同时",
         "装备",
         "换上",
         "脱下",
@@ -265,9 +360,13 @@ def _is_prototype_only_request(user_input, matched_terms):
         "落下",
         "砸",
         "挡",
+        "从",
+        "在",
+        "里",
+        "有",
         "的",
     )
-    for phrase in removable_phrases:
+    for phrase in (*extra_phrases, *removable_phrases):
         remainder = remainder.replace(phrase, "")
     remainder = re.sub(r"[，。！？、,.;:：；!?()（）\[\]【】<>《》\-—_]+", "", remainder)
     return not remainder
@@ -301,6 +400,26 @@ def guard_prototype_category(category_code, user_input, llm_decision):
     if _is_prototype_only_request(user_input, matched_terms):
         return "3"
     return "3" if _as_text(llm_decision).strip() == "3" else "0"
+
+
+def guard_prototype_category_strict(category_code, user_input, llm_decision):
+    """99-diamond guard: keep prototype actions and affordable support props."""
+    if _as_text(category_code).strip() != "3":
+        return "0"
+    matched_terms = _matched_prototype_terms(user_input)
+    if not matched_terms:
+        return "0"
+    if detect_policy_constraints(user_input):
+        return "0"
+    if _has_forbidden_prototype_remainder(user_input, matched_terms):
+        return "0"
+    if _is_prototype_only_request(
+        user_input,
+        matched_terms,
+        (*_99_ALLOWED_SUPPORT_OBJECT_TERMS, *_99_PROTOTYPE_ACTION_TERMS),
+    ):
+        return "3"
+    return guard_prototype_category(category_code, user_input, llm_decision)
 
 
 def _extract_json_object(value):
@@ -694,14 +813,16 @@ def _policy_router_input_types():
 
 
 class PeaceElitePrototypePolicyRouter(PeaceElitePrototypeRouter):
-    """Legacy-output router with a deterministic guard around the semantic decision."""
+    """99-diamond router with a strict six-prototype-only policy backstop."""
 
     @classmethod
     def INPUT_TYPES(cls):
         return _policy_router_input_types()
 
     def route(self, category_code, user_input, llm_decision):
-        guarded = guard_prototype_category(category_code, user_input, llm_decision)
+        guarded = guard_prototype_category_strict(
+            category_code, user_input, llm_decision
+        )
         return super().route(guarded, user_input)
 
 
@@ -742,6 +863,220 @@ class GameUGCRoutePolicyGuard:
 
     def guard(self, llm_output, user_input):
         return guard_route_output(llm_output, user_input)
+
+
+def _normalize_name_piece(value):
+    return re.sub(r"\s+", "", _as_text(value).strip())
+
+
+def _planner_name(user_input, route):
+    """Return a <=6-character gift name built only from source spans."""
+    compact = _normalize_name_piece(user_input)
+    if 1 <= len(compact) <= 6:
+        return compact, [compact], "EXACT_INPUT"
+
+    raw_sources = route.get("name_source", []) if isinstance(route, dict) else []
+    if isinstance(raw_sources, str):
+        raw_sources = [raw_sources]
+    sources = []
+    cursor = 0
+    for raw_piece in raw_sources[:3] if isinstance(raw_sources, list) else []:
+        piece = _normalize_name_piece(raw_piece)
+        if not piece:
+            continue
+        index = compact.find(piece, cursor)
+        if index < 0:
+            sources = []
+            break
+        sources.append(piece)
+        cursor = index + len(piece)
+
+    joined = "".join(sources)
+    proposed = _normalize_name_piece(route.get("gift_name", "")) if isinstance(route, dict) else ""
+    if sources and joined == proposed and 1 <= len(joined) <= 6:
+        return joined, sources, "EXACT_EXTRACT"
+
+    for key in ("display_text", "visual_subject"):
+        candidate = _normalize_name_piece(route.get(key, "")) if isinstance(route, dict) else ""
+        if 1 <= len(candidate) <= 6 and candidate in compact:
+            return candidate, [candidate], "EXACT_EXTRACT"
+
+    for prototype in PROTOTYPES:
+        for term in prototype["terms"]:
+            if term in compact and len(term) <= 6:
+                return term, [term], "EXACT_EXTRACT"
+
+    anchor = _normalize_name_piece(_compact_user_anchor(user_input))[:6] or "礼物"
+    source = anchor if anchor in compact else compact[:6]
+    source = source or "礼物"
+    return source[:6], [source[:6]], "SAFE_FALLBACK"
+
+
+def _planner_text_spec(user_input, route, constraints):
+    display_text, _ = _safe_display_text(user_input, route or {})
+    display_text = _normalize_name_piece(display_text)[:12] or "礼物"
+    base = dict(route) if isinstance(route, dict) else {}
+    base.update(
+        {
+            "schema_version": 3,
+            "user_input": _as_text(user_input),
+            "need_search": False,
+            "search_query": "",
+            "search_reason": "",
+            "prototype_decision": "0",
+            "render_mode": "TEXT",
+            "subject_mode": "TEXT",
+            "visual_subject": display_text,
+            "entities": [display_text],
+            "relation": "",
+            "action_intent": _as_text(base.get("action_intent")).strip()[:120],
+            "constraints": constraints or ["OVER_BUDGET"],
+            "display_text": display_text,
+            "evidence": [],
+        }
+    )
+    return base
+
+
+def guard_planner_output(llm_output, user_input):
+    """Validate the v3 planner contract and keep search/name decisions compact."""
+    route = _extract_json_object(llm_output)
+    detected = detect_policy_constraints(user_input)
+    existing = route.get("constraints", []) if isinstance(route, dict) else []
+    constraints = []
+    if not isinstance(existing, list):
+        existing = []
+    for item in [*existing, *detected]:
+        if item in ALLOWED_ROUTE_CONSTRAINTS and item not in constraints:
+            constraints.append(item)
+
+    valid = (
+        isinstance(route, dict)
+        and route.get("schema_version") == 3
+        and route.get("render_mode") in {"OBJECT", "TEXT"}
+        and route.get("subject_mode")
+        in {"DIRECT", "REPRESENTATIVE", "RELATION", "TEXT"}
+        and _as_text(route.get("prototype_decision")).strip() in {"3", "0"}
+    )
+    hard_text = any(item in constraints for item in ("HIGH_VALUE", "BRAND_ASSET"))
+    if not valid or hard_text:
+        route = _planner_text_spec(
+            user_input,
+            route if isinstance(route, dict) else {},
+            constraints,
+        )
+    else:
+        route = dict(route)
+        route["schema_version"] = 3
+        route["user_input"] = _as_text(user_input)
+        route["constraints"] = constraints
+        if route["render_mode"] == "TEXT":
+            route["subject_mode"] = "TEXT"
+            display_text, _ = _safe_display_text(user_input, route)
+            route["display_text"] = _normalize_name_piece(display_text)[:12] or "礼物"
+            route["visual_subject"] = route["display_text"]
+            route["entities"] = [route["display_text"]]
+        else:
+            route.pop("display_text", None)
+            entities = route.get("entities", [])
+            if not isinstance(entities, list):
+                entities = []
+            route["entities"] = [
+                _as_text(item).strip()[:80]
+                for item in entities[:4]
+                if _as_text(item).strip()
+            ]
+            route["visual_subject"] = _as_text(route.get("visual_subject")).strip()[:120]
+
+        route["relation"] = _as_text(route.get("relation")).strip()[:160]
+        route["action_intent"] = _as_text(route.get("action_intent")).strip()[:160]
+        evidence = route.get("evidence", [])
+        if not isinstance(evidence, list):
+            evidence = []
+        route["evidence"] = [
+            _as_text(item).strip()[:160]
+            for item in evidence[:3]
+            if _as_text(item).strip()
+        ]
+
+        prototype_decision = _as_text(route.get("prototype_decision")).strip()
+        route["prototype_decision"] = prototype_decision
+        need_search = bool(route.get("need_search")) and prototype_decision == "0"
+        search_query = _as_text(route.get("search_query")).strip()[:160]
+        route["need_search"] = bool(need_search and search_query)
+        route["search_query"] = search_query if route["need_search"] else ""
+        route["search_reason"] = (
+            _as_text(route.get("search_reason")).strip()[:120]
+            if route["need_search"]
+            else ""
+        )
+
+    gift_name, sources, name_mode = _planner_name(user_input, route)
+    route["gift_name"] = gift_name
+    route["name_source"] = sources
+    route["name_mode"] = name_mode
+
+    ordered_keys = (
+        "schema_version",
+        "user_input",
+        "gift_name",
+        "name_source",
+        "name_mode",
+        "need_search",
+        "search_query",
+        "search_reason",
+        "prototype_decision",
+        "render_mode",
+        "subject_mode",
+        "visual_subject",
+        "entities",
+        "relation",
+        "action_intent",
+        "constraints",
+        "display_text",
+        "evidence",
+    )
+    route = {key: route[key] for key in ordered_keys if key in route}
+    marker = f'<<<SUBJECT_{route["render_mode"]}>>>'
+    spec_json = json.dumps(route, ensure_ascii=False, separators=(",", ":"))
+    return (
+        f"{marker}\n{spec_json}",
+        spec_json,
+        route["need_search"],
+        route["prototype_decision"],
+    )
+
+
+class GameUGCPlannerPolicyGuard:
+    """Validate v3 PlannerSpec, exact-source gift names, and conditional search."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "llm_output": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+                "user_input": (
+                    "STRING",
+                    {"default": "", "multiline": True, "forceInput": True},
+                ),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "BOOLEAN", "STRING")
+    RETURN_NAMES = (
+        "validated_output",
+        "spec_json",
+        "need_search",
+        "prototype_decision",
+    )
+    FUNCTION = "guard"
+    CATEGORY = "ByteArtist/logic"
+
+    def guard(self, llm_output, user_input):
+        return guard_planner_output(llm_output, user_input)
 
 
 class PeaceElitePEAssembler:
@@ -840,6 +1175,7 @@ NODE_CLASS_MAPPINGS = {
     "PeaceElitePEAssembler": PeaceElitePEAssembler,
     "PeaceEliteReferenceBatch": PeaceEliteReferenceBatch,
     "GameUGCRoutePolicyGuard": GameUGCRoutePolicyGuard,
+    "GameUGCPlannerPolicyGuard": GameUGCPlannerPolicyGuard,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -850,4 +1186,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "PeaceElitePEAssembler": "和平精英原型 PE 组装",
     "PeaceEliteReferenceBatch": "和平精英有序多参考图列表",
     "GameUGCRoutePolicyGuard": "游戏 UGC 主体路由策略护栏",
+    "GameUGCPlannerPolicyGuard": "游戏 UGC Planner 策略护栏",
 }
