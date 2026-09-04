@@ -164,6 +164,29 @@ _BRAND_ASSET_PATTERNS = (
 
 _GENERIC_FALLBACK_TEXTS = {"心意收到", "心意", "收到", "自定义礼物", "礼物"}
 
+# Exact high-confidence terms for which production has already demonstrated a
+# repeatable LLM failure: the Planner returns a formally valid audited TEXT
+# even though one safe, value-neutral representative is obvious. Keep this
+# map deliberately narrow. Composite requests still need semantic planning so
+# a deterministic rescue cannot silently delete another requested subject.
+_EXACT_REPRESENTATIVE_RESCUES = {
+    "丘丘人": {
+        "candidates": ["丘丘木面具", "粗木棒"],
+        "selected": "丘丘木面具",
+        "constraints": ["BIOLOGICAL", "OVER_BUDGET"],
+    },
+    "托儿索": {
+        "candidates": ["疾风武士刀", "青色风纹刀鞘"],
+        "selected": "疾风武士刀",
+        "constraints": ["BIOLOGICAL", "OVER_BUDGET"],
+    },
+    "非洲之心": {
+        "candidates": ["粗砺红矿石", "红色矿石碎片"],
+        "selected": "粗砺红矿石",
+        "constraints": ["HIGH_VALUE", "OVER_BUDGET"],
+    },
+}
+
 # High-confidence extra subjects that must not be silently dropped merely
 # because the same input also names one of the six fixed prototypes. This is
 # deliberately a narrow bypass guard, not a replacement for the generic LLM
@@ -240,6 +263,11 @@ def detect_policy_constraints(user_input):
     if any(pattern.search(normalized) for pattern in _BRAND_ASSET_PATTERNS):
         constraints.append("BRAND_ASSET")
     return constraints
+
+
+def _exact_representative_rescue(user_input):
+    """Return a safe representative only for an exact production-approved term."""
+    return _EXACT_REPRESENTATIVE_RESCUES.get(normalize_policy_text(user_input))
 
 
 def _matched_prototype_terms(user_input):
@@ -1013,6 +1041,7 @@ def guard_planner_output(
     )
     route = _extract_json_object(llm_output)
     detected = detect_policy_constraints(user_input)
+    representative_rescue = _exact_representative_rescue(user_input)
     existing = route.get("constraints", []) if isinstance(route, dict) else []
     constraints = []
     if not isinstance(existing, list):
@@ -1029,6 +1058,11 @@ def guard_planner_output(
         in {"DIRECT", "REPRESENTATIVE", "RELATION", "TEXT"}
         and _as_text(route.get("prototype_decision")).strip() in {"3", "0"}
     )
+    # For an exact approved rescue, do not let an LLM-invented BRAND_ASSET
+    # constraint turn the term into text. A brand request detected from the
+    # raw user input still wins and cannot be bypassed.
+    if representative_rescue and "BRAND_ASSET" not in detected:
+        constraints = list(representative_rescue["constraints"])
     hard_restricted = "BRAND_ASSET" in constraints
     if not valid and not hard_restricted:
         raise ValueError("PlannerSpec is invalid; refusing silent TEXT fallback")
@@ -1075,6 +1109,26 @@ def guard_planner_output(
                 else ""
             )
             route["action_intent"] = _as_text(user_input).strip()[:160]
+            route.pop("display_text", None)
+        elif representative_rescue:
+            candidates = list(representative_rescue["candidates"])
+            selected = representative_rescue["selected"]
+            route["need_search"] = False
+            route["search_query"] = ""
+            route["search_reason"] = ""
+            route["prototype_decision"] = "0"
+            route["budget_status"] = over_status
+            route["representative_candidates"] = candidates
+            route["representative_selected"] = selected
+            route["representative_status"] = "PASS"
+            route["representative_failure_reason"] = ""
+            route["render_mode"] = "OBJECT"
+            route["subject_mode"] = "REPRESENTATIVE"
+            route["visual_subject"] = selected
+            route["entities"] = [selected]
+            route["relation"] = ""
+            route["action_intent"] = ""
+            route["evidence"] = []
             route.pop("display_text", None)
 
         claimed_budget = _as_text(route.get("budget_status")).strip()

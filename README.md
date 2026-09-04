@@ -58,6 +58,12 @@ result to an OBJECT prototype spec and disables search. The same node is used
 before and after the lazy Web Search switch, so the hard decision reaches both
 the search control and the downstream image/motion context.
 
+The guard also has three deliberately exact representative rescues for
+production-observed false TEXT fallbacks: `丘丘人` selects `丘丘木面具`, `托儿索`
+selects `疾风武士刀`, and `非洲之心` selects `粗砺红矿石`. These activate only
+when the normalized full input equals one of those terms. Composite requests
+remain under the normal semantic Planner and safety policy.
+
 Outputs:
 
 - `validated_output`: the marker-plus-JSON `ProductionSpec` for downstream
