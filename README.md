@@ -61,12 +61,27 @@ the search control and the downstream image/motion context.
 The guard enforces representative resolution as a general stage order rather
 than maintaining a term-to-object patch list. A `PRE_SEARCH` guard turns a
 failed single biological or `IDENTITY_SUBJECT` representative attempt into a
-lazy search request. If either Planner returns malformed, incomplete, or
-internally inconsistent output, the guard produces a deterministic runnable
-spec from the original user input instead of raising an exception. Safe literal
+lazy search request. Node-only fix **v3.35.16** repairs absent/null/empty
+bookkeeping fields from explicit subject decisions before validation. An
+equipment OBJECT or an explicitly selected REPRESENTATIVE is preserved when
+schema, prototype, budget, or representative audit metadata is missing. The
+guard never invents a carrier or picks arbitrarily among unresolved candidates.
+If either Planner returns unrecoverable or internally inconsistent output,
+the guard produces a deterministic runnable spec instead of raising an
+exception. Recovery preserves identified policy constraints; an incomplete
+single identity/biological audit still requests search at `PRE_SEARCH`.
+At `FINAL`, unresolved results remain TEXT without starting another search.
+An unparseable response or a response that never identified the subject as an
+identity cannot be reliably classified by this repair. Safe literal
 prototype hits still become OBJECT specs; other unrecoverable results preserve
 the original input as TEXT. Brand assets remain prohibited, and composite
 relations stay under semantic planning.
+
+This update retains existing node ports and schema-v3 output fields. Existing
+1- and 99-diamond workflow JSON files need no edits; update this node package
+and restart/reload the BA runtime. It does not change the legacy 299-diamond
+router. Local tests do not establish the cause of any previous BA output or
+replace an end-to-end rerun.
 
 Outputs:
 

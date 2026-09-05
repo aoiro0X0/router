@@ -1041,6 +1041,74 @@ def _needs_identity_representative_resolution(route, constraints):
     )
 
 
+def _repair_missing_planner_fields(route, constraints, price_diamonds):
+    """Recover bookkeeping from explicit decisions, never invent a subject."""
+    route = dict(route)
+
+    def fill(key, value):
+        if key not in route or route[key] is None or route[key] == "":
+            route[key] = value
+
+    mode = route.get("subject_mode")
+    if mode in {"DIRECT", "REPRESENTATIVE", "RELATION"}:
+        fill("render_mode", "OBJECT")
+    elif mode == "TEXT":
+        fill("render_mode", "TEXT")
+    if route.get("render_mode") == "TEXT":
+        fill("subject_mode", "TEXT")
+    elif route.get("render_mode") == "OBJECT":
+        if _as_text(route.get("representative_selected")).strip():
+            fill("subject_mode", "REPRESENTATIVE")
+        elif (
+            route.get("budget_status") == f"WITHIN_{price_diamonds}"
+            and _as_text(route.get("visual_subject")).strip()
+            and not _as_text(route.get("relation")).strip()
+            and isinstance(route.get("entities", []), list)
+            and len(route.get("entities", [])) <= 1
+        ):
+            fill("subject_mode", "DIRECT")
+    if route.get("render_mode") not in {"OBJECT", "TEXT"} or route.get(
+        "subject_mode"
+    ) not in {"DIRECT", "REPRESENTATIVE", "RELATION", "TEXT"}:
+        return route
+
+    fill("schema_version", 3)
+    fill("prototype_decision", "0")
+    fill("representative_candidates", [])
+    fill("representative_selected", "")
+    fill("representative_failure_reason", "")
+    mode = route["subject_mode"]
+    if mode == "REPRESENTATIVE":
+        selected = _as_text(route.get("representative_selected")).strip()
+        subject = _as_text(route.get("visual_subject")).strip()
+        candidates = route["representative_candidates"]
+        if (
+            not selected and subject and isinstance(candidates, list)
+            and (subject in candidates or not candidates)
+            and route.get("representative_status") in {None, "", "PASS"}
+        ):
+            selected = subject
+            route["representative_selected"] = selected
+        if selected:
+            fill("visual_subject", selected)
+            if not candidates:
+                route["representative_candidates"] = [selected]
+            fill("representative_status", "PASS")
+    over_budget = mode == "REPRESENTATIVE" or any(
+        item in PLANNER_OVER_BUDGET_CONSTRAINTS for item in constraints
+    )
+    if mode != "REPRESENTATIVE":
+        fill("representative_status", "FAIL" if mode == "TEXT" and over_budget else "NOT_NEEDED")
+    budget = f"OVER_{price_diamonds}" if over_budget else (
+        "NOT_APPLICABLE" if mode == "TEXT" else f"WITHIN_{price_diamonds}"
+    )
+    fill("budget_status", budget)
+    fill("need_search", bool(_as_text(route.get("search_query")).strip()))
+    if route.get("need_search") is True:
+        fill("search_query", _as_text(route.get("user_input")).strip())
+    return route
+
+
 def _guard_planner_output_strict(
     llm_output,
     user_input,
@@ -1072,6 +1140,10 @@ def _guard_planner_output_strict(
     for item in [*existing, *detected]:
         if item in ALLOWED_ROUTE_CONSTRAINTS and item not in constraints:
             constraints.append(item)
+
+    if isinstance(route, dict):
+        route = dict(route, user_input=_as_text(user_input))
+        route = _repair_missing_planner_fields(route, constraints, price_diamonds)
 
     valid = (
         isinstance(route, dict)
@@ -1330,7 +1402,9 @@ def _guard_planner_output_strict(
     )
 
 
-def _planner_runnable_fallback(user_input, price_diamonds=99, category_code=""):
+def _planner_runnable_fallback(
+    user_input, price_diamonds=99, category_code="", previous_route=None, guard_stage="FINAL"
+):
     """Build a deterministic spec instead of stopping on arbitrary LLM output."""
     try:
         price_diamonds = int(price_diamonds)
@@ -1399,6 +1473,44 @@ def _planner_runnable_fallback(user_input, price_diamonds=99, category_code=""):
             "evidence": [],
         }
 
+        # A formatting failure must not erase an already identified restriction
+        # or make an unresolved identity silently bypass the search stage.
+        previous = previous_route if isinstance(previous_route, dict) else {}
+        existing = previous.get("constraints", [])
+        constraints = list(dict.fromkeys(
+            item for item in (existing if isinstance(existing, list) else [])
+            if isinstance(item, str) and item in ALLOWED_ROUTE_CONSTRAINTS
+        ))
+        for item in detect_policy_constraints(user_input):
+            if item not in constraints:
+                constraints.append(item)
+        if constraints:
+            hard_restricted = "BRAND_ASSET" in constraints
+            for key in ("gift_name", "name_source", "display_text", "action_intent"):
+                if key in previous:
+                    route[key] = previous[key]
+            route = _planner_text_spec(
+                user_input, route, constraints, hard_restricted, price_diamonds
+            )
+            if not hard_restricted:
+                if "OVER_BUDGET" not in constraints:
+                    constraints.append("OVER_BUDGET")
+                for key in ("representative_candidates", "evidence"):
+                    values = previous.get(key, [])
+                    route[key] = [
+                        value[:160] for value in values
+                        if isinstance(value, str) and value.strip()
+                    ][:3] if isinstance(values, list) else []
+                # Inspect the original relation before TEXT collapses entities.
+                pending = dict(previous, render_mode="TEXT", representative_status="FAIL")
+                if (
+                    _as_text(guard_stage).strip().upper() == "PRE_SEARCH"
+                    and _needs_identity_representative_resolution(pending, constraints)
+                ):
+                    route["need_search"] = True
+                    route["search_query"] = f"{_as_text(user_input).strip()[:80]} 标志性装备 道具 信物 代表物"
+                    route["search_reason"] = "代表物评估未完成，先搜索再决定是否使用文字"
+
     gift_name, sources, name_mode = _planner_name(user_input, route)
     route["gift_name"] = gift_name
     route["name_source"] = sources
@@ -1434,6 +1546,8 @@ def guard_planner_output(
             user_input,
             price_diamonds,
             category_code,
+            _extract_json_object(llm_output),
+            guard_stage,
         )
 
 
