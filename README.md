@@ -21,6 +21,14 @@ The Web Search plugin and the Planner/Image/Motion LLM nodes remain separate
 runtime dependencies. They are model/tool execution nodes rather than
 deterministic routing nodes.
 
+`GameUGCImagePromptTextGuard` accepts an optional `style_prefix` string.
+An empty or omitted value keeps existing workflow behavior. A non-empty value
+replaces recognized leading legacy style prefixes for both OBJECT and TEXT,
+including malformed-spec and empty-prompt fallbacks, while preserving the
+design body and exact TEXT literal. It does not remove words inside a design
+or judge image quality. Update the node package and reload ComfyUI before
+importing a workflow that configures this input.
+
 ## Nodes
 
 ### Policy Router variants

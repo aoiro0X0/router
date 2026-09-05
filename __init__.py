@@ -429,32 +429,46 @@ _LEADING_TEXT_DISPLAY_INSTRUCTION = re.compile(
 )
 
 
-def guard_image_prompt_text(image_prompt, spec_json, user_input=""):
+def guard_image_prompt_text(image_prompt, spec_json, user_input="", style_prefix=""):
     """Return a runnable image prompt even when either upstream LLM drifts."""
     prompt = _as_text(image_prompt).strip()
+    custom_prefix = _as_text(style_prefix).strip()
+    prefix = custom_prefix or IMAGE_PROMPT_MAIN_PREFIX
+    if custom_prefix:
+        legacy_character_prefix = IMAGE_PROMPT_MAIN_PREFIX.replace(
+            "3D animated,", "3D animated character,"
+        )
+        # Replace only known leading envelopes, never words inside the design.
+        known_prefixes = (IMAGE_PROMPT_MAIN_PREFIX, legacy_character_prefix, prefix)
+        while prompt:
+            matched = next((p for p in known_prefixes if prompt.startswith(p)), None)
+            if matched is None:
+                break
+            prompt = prompt[len(matched):].lstrip()
     spec = _extract_json_object(spec_json)
     if not isinstance(spec, dict) or spec.get("schema_version") != 3:
         if prompt:
-            return prompt
+            return f"{prefix} {prompt}" if custom_prefix else prompt
         display_text = _normalize_name_piece(user_input)[:12] or "礼物"
         return (
-            f"{IMAGE_PROMPT_MAIN_PREFIX} "
+            f"{prefix} "
             f"{_text_display_instruction(display_text)} "
             "设计为清楚、完整、居中的商业游戏字标，纯黑色背景。"
         )
     if spec.get("render_mode") != "TEXT":
         if prompt:
-            return prompt
+            return f"{prefix} {prompt}" if custom_prefix else prompt
         subject = (
             _as_text(spec.get("visual_subject")).strip()
             or _as_text(user_input).strip()
             or _as_text(spec.get("gift_name")).strip()
             or "礼物"
         )
-        return (
-            f"{IMAGE_PROMPT_MAIN_PREFIX} {subject}，主体居中、完整入画，"
-            "高级风格化3D动画电影质感，纯黑色背景。"
+        fallback = (
+            "各部件保留自身材质与表面细节，纯黑色背景。"
+            if custom_prefix else "高级风格化3D动画电影质感，纯黑色背景。"
         )
+        return f"{prefix} {subject}，主体居中、完整入画，{fallback}"
 
     display_text = (
         _as_text(spec.get("display_text")).strip()
@@ -470,7 +484,7 @@ def guard_image_prompt_text(image_prompt, spec_json, user_input=""):
     body = _LEADING_TEXT_DISPLAY_INSTRUCTION.sub("", body, count=1).strip()
 
     protected_prefix = (
-        f"{IMAGE_PROMPT_MAIN_PREFIX} {_text_display_instruction(display_text)}"
+        f"{prefix} {_text_display_instruction(display_text)}"
     )
     if not body:
         body = "设计为清楚、完整、居中的商业游戏字标，纯黑色背景。"
@@ -1628,6 +1642,7 @@ class GameUGCImagePromptTextGuard:
                     "STRING",
                     {"default": "", "multiline": True, "forceInput": True},
                 ),
+                "style_prefix": ("STRING", {"default": "", "multiline": False}),
             }
         }
 
@@ -1636,8 +1651,8 @@ class GameUGCImagePromptTextGuard:
     FUNCTION = "guard"
     CATEGORY = "ByteArtist/logic"
 
-    def guard(self, image_prompt, spec_json, user_input=""):
-        return (guard_image_prompt_text(image_prompt, spec_json, user_input),)
+    def guard(self, image_prompt, spec_json, user_input="", style_prefix=""):
+        return (guard_image_prompt_text(image_prompt, spec_json, user_input, style_prefix),)
 
 
 class PeaceElitePEAssembler:
